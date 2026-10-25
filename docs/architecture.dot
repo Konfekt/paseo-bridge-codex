@@ -1,0 +1,21 @@
+digraph bridge {
+  // Match SVG point coordinates; Graphviz 2.43 clips this SVG at 300 dpi.
+  graph [rankdir=LR overlap=false splines=spline dpi=72 pad="0.6,0.4" nodesep=0.65 ranksep=0.8 fontcolor="#333333" fontsize=18 fontname="Droid Sans"];
+  node [shape=rectangle style="filled,rounded" fillcolor="#f0f4f8:white" gradientangle=270 labelloc="c" color="#b0c4de" penwidth=2 fontname="Droid Sans" fontsize=14 fontcolor="#2d3748"];
+  edge [color="grey" style="solid" arrowsize=1.2 penwidth=2 fontname="Droid Sans" fontsize=14 fontcolor="#4a5568"];
+  tui [label="Codex terminal"];
+  daemon [label="Shared Codex daemon\nOwns threads and execution"];
+  paseo [label="Unmodified Paseo\nOwns agent entries"];
+  subgraph cluster_plugin {
+    label="Plugin process: starts and stops with Paseo";
+    color="#b0c4de";
+    style="rounded";
+    margin=22;
+    provider [label="Codex Terminal provider\nOwns proxy and subscription"];
+    watcher [label="One discovery worker\nChecks every 2 seconds"];
+  }
+  tui -> daemon [label="Native connection" dir=both];
+  provider -> daemon [label="Official proxy\nWebSocket JSON-RPC" dir=both];
+  paseo -> provider [label="Provider protocol" dir=both];
+  watcher -> paseo [label="List sessions / import"];
+}

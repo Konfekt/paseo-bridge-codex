@@ -1,0 +1,45 @@
+{
+  "name": "paseo-bridge-codex",
+  "version": "0.1.0",
+  "description": "Attach shared-daemon Codex terminal threads to unmodified Paseo",
+  "type": "module",
+  "engines": {
+    "node": ">=22.22.0"
+  },
+  "packageManager": "pnpm@12.8.1",
+  "bin": {
+    "paseo-bridge-codex": "server/cli.js"
+  },
+  "files": [
+    "server",
+    "index.server.ts",
+    "paseo-plugin.json",
+    "README.md"
+  ],
+  "scripts": {
+    "format": "biome check --write .",
+    "lint": "biome check .",
+    "typecheck": "pnpm build && tsc --noEmit",
+    "test": "vitest run",
+    "build": "tsc -p tsconfig.build.json",
+    "package:smoke": "node scripts/package-smoke.mjs",
+    "verify": "pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm package:smoke"
+  },
+  "dependencies": {
+    "@getpaseo/client": "0.13.0",
+    "@getpaseo/plugin": "0.13.0",
+    "@getpaseo/protocol": "0.13.0",
+    "@getpaseo/server": "0.13.0",
+    "zod": "4.6.7",
+    "ws": "8.22.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.6.2",
+    "@openai/codex": "0.164.0",
+    "@tsconfig/strictest": "2.0.8",
+    "@types/node": "^22.19.0",
+    "@types/ws": "8.18.2",
+    "typescript": "7.0.2",
+    "vitest": "5.0.5"
+  }
+}
