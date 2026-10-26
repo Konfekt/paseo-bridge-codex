@@ -38,6 +38,27 @@ test("plugin lifecycle discovers, restores and steers terminal threads without a
     status: { type: "active" },
   };
   const threads = [thread];
+  let latestTurnId = "native-turn";
+  const items: Array<{ turnId: string; item: Record<string, unknown> }> = [
+    {
+      turnId: latestTurnId,
+      item: { id: "native-message", type: "agentMessage", text: "Existing terminal output" },
+    },
+  ];
+  const publishItem = (item: Record<string, unknown>) => {
+    items.push({ turnId: latestTurnId, item });
+    for (const socket of native.clients)
+      socket.send(
+        JSON.stringify({
+          method: "item/completed",
+          params: {
+            threadId: thread.id,
+            turnId: latestTurnId,
+            item,
+          },
+        }),
+      );
+  };
   native.on("connection", (socket) => {
     socket.on("message", (bytes) => {
       const message = JSON.parse(bytes.toString()) as {
@@ -67,29 +88,57 @@ test("plugin lifecycle discovers, restores and steers terminal threads without a
           break;
         case "thread/items/list":
           result = {
-            data: [
-              {
-                turnId: "native-turn",
-                item: {
-                  id: "native-message",
-                  type: "agentMessage",
-                  text: "Existing terminal output",
-                },
+            data: items
+              .filter((entry) => !params["turnId"] || params["turnId"] === entry.turnId)
+              .map((entry) => ({
+                ...entry,
                 startedAtMs: 1_700_000_000_000,
                 completedAtMs: null,
-              },
-            ],
+              })),
             nextCursor: null,
           };
           break;
         case "thread/turns/list":
           result = {
-            data: [{ id: "native-turn", status: "inProgress", error: null }],
+            data: [
+              {
+                id: latestTurnId,
+                status: requestedThread.status.type === "active" ? "inProgress" : "completed",
+                error: null,
+              },
+            ],
             nextCursor: null,
           };
           break;
         case "turn/steer":
-          result = { turnId: "native-turn" };
+          publishItem({
+            type: "userMessage",
+            id: String(params["clientUserMessageId"]),
+            clientId: params["clientUserMessageId"],
+            content: params["input"],
+          });
+          result = { turnId: latestTurnId };
+          break;
+        case "turn/start":
+          latestTurnId = "answer-turn";
+          requestedThread.status.type = "active";
+          for (const client of native.clients)
+            client.send(
+              JSON.stringify({
+                method: "turn/started",
+                params: {
+                  threadId: requestedThread.id,
+                  turn: { id: latestTurnId, status: "inProgress", error: null },
+                },
+              }),
+            );
+          publishItem({
+            type: "userMessage",
+            id: String(params["clientUserMessageId"]),
+            clientId: params["clientUserMessageId"],
+            content: params["input"],
+          });
+          result = { turn: { id: latestTurnId, status: "inProgress", error: null } };
           break;
         case "thread/unsubscribe":
           result = {};
@@ -227,6 +276,69 @@ test("plugin lifecycle discovers, restores and steers terminal threads without a
         (request) => request.method === "thread/start" || request.method === "turn/start",
       ),
     ).toBe(false);
+    // A completed async message is a question, not a blocking JSON-RPC request.
+    publishItem({
+      type: "agentMessage",
+      id: "async-question",
+      delivery: "async",
+      text: "Choose the next step",
+      questions: [
+        { title: "Choose the next step", options: ["Review", "Implement"] },
+        { title: "Additional context" },
+      ],
+    });
+    await expect
+      .poll(async () => {
+        const agent = (await connectedClient.fetchAgentTimeline(agentId)).agent;
+        return agent?.pendingPermissions.find((p) => p.name === "request_user_input_async");
+      })
+      .toMatchObject({
+        id: "async-question",
+        kind: "question",
+        input: {
+          questions: [
+            {
+              header: "Question 1",
+              question: "Choose the next step",
+              options: [{ label: "Review" }, { label: "Implement" }],
+              allowOther: true,
+            },
+            { header: "Question 2", question: "Additional context", options: [], allowOther: true },
+          ],
+        },
+      });
+    await client.respondToPermissionAndWait(agentId, "async-question", {
+      behavior: "allow",
+      updatedInput: {
+        answers: { "Question 1": "Review", "Question 2": "Native history remains authoritative" },
+      },
+    });
+    const answer = items
+      .map((entry) => entry.item)
+      .find(
+        (item) =>
+          item["type"] === "userMessage" &&
+          JSON.stringify(item["content"]).includes("<send_user_message_question_reply>"),
+      );
+    expect(answer?.["content"]).toEqual([
+      {
+        type: "text",
+        text: `<send_user_message_question_reply>\n${JSON.stringify([
+          {
+            answer: "Review",
+            question: "Choose the next step",
+            questionItemId: '["request_user_input_async","async-question",0]',
+          },
+          {
+            answer: "Native history remains authoritative",
+            question: "Additional context",
+            questionItemId: '["request_user_input_async","async-question",1]',
+          },
+        ])}\n</send_user_message_question_reply>`,
+        text_elements: [],
+      },
+    ]);
+    expect(daemon.agentManager.getAgent(agentId)?.pendingPermissions.size).toBe(0);
     threads.push({ ...thread, id: "later-terminal-thread" });
     await expect
       .poll(async () => (await connectedClient.fetchAgents()).entries.length, { timeout: 15_000 })
@@ -281,7 +393,7 @@ test("plugin lifecycle discovers, restores and steers terminal threads without a
     });
     await expect
       .poll(() => requests.filter((request) => request.method === "turn/steer").length)
-      .toBe(2);
+      .toBe(3);
     expect(await client.disablePlugin("paseo-bridge-codex")).toMatchObject({ status: "disabled" });
     threads.push({ ...thread, id: "while-disabled-thread" });
     const requestCount = requests.length;
@@ -310,6 +422,92 @@ test("plugin lifecycle discovers, restores and steers terminal threads without a
     expect((await client.fetchAgents()).entries.map((entry) => entry.agent.id).sort()).toEqual(
       enabledIds,
     );
+    const completedTurns: string[] = [];
+    const stopObserving = daemon.agentManager.subscribe(
+      (event) => {
+        if (event.type === "agent_stream" && event.event.type === "turn_completed")
+          completedTurns.push(event.event.turnId ?? "");
+      },
+      { agentId, replayState: false },
+    );
+    try {
+      publishItem({
+        type: "agentMessage",
+        id: "delayed-question",
+        delivery: "async",
+        text: "Answer after completion",
+        questions: [{ title: "Answer after completion", options: ["Continue"] }],
+      });
+      await expect
+        .poll(() =>
+          daemon.agentManager.getAgent(agentId)?.pendingPermissions.has("delayed-question"),
+        )
+        .toBe(true);
+      // The native turn finishes while its completion and status notifications are lost.
+      thread.status.type = "idle";
+      await expect
+        .poll(
+          async () => {
+            const current = (await restartedClient.fetchAgents()).entries.find(
+              (entry) => entry.agent.id === agentId,
+            )?.agent;
+            return { status: current?.status, activeTurn: current?.activeTurn?.turnId ?? null };
+          },
+          { timeout: 10_000 },
+        )
+        .toEqual({ status: "idle", activeTurn: null });
+      const countTurnReads = () =>
+        requests.filter(
+          (request) =>
+            request.method === "thread/turns/list" && request.params["threadId"] === thread.id,
+        ).length;
+      const completedReadCount = countTurnReads();
+      await expect
+        .poll(countTurnReads, { timeout: 10_000 })
+        .toBeGreaterThanOrEqual(completedReadCount + 2);
+      expect(completedTurns).toEqual(["native-turn"]);
+      expect((await client.fetchAgents()).entries.map((entry) => entry.agent.id).sort()).toEqual(
+        enabledIds,
+      );
+      expect(
+        daemon.agentManager.getAgent(agentId)?.pendingPermissions.has("delayed-question"),
+      ).toBe(true);
+      await client.reloadPlugin("paseo-bridge-codex");
+      await expect
+        .poll(
+          () => daemon.agentManager.getAgent(agentId)?.pendingPermissions.has("delayed-question"),
+          { timeout: 15_000 },
+        )
+        .toBe(true);
+      await client.respondToPermissionAndWait(agentId, "delayed-question", {
+        behavior: "allow",
+        updatedInput: { answers: { "Question 1": "Continue" } },
+      });
+      expect(requests.filter((request) => request.method === "turn/start")).toHaveLength(1);
+      expect(items.at(-1)).toMatchObject({
+        turnId: "answer-turn",
+        item: {
+          type: "userMessage",
+          content: [
+            {
+              text: '<send_user_message_question_reply>\n[{"answer":"Continue","question":"Answer after completion","questionItemId":"[\\"request_user_input_async\\",\\"delayed-question\\",0]"}]\n</send_user_message_question_reply>',
+            },
+          ],
+        },
+      });
+      await expect
+        .poll(() =>
+          daemon.agentManager.getAgent(agentId)?.pendingPermissions.has("delayed-question"),
+        )
+        .toBe(false);
+      await client.reloadPlugin("paseo-bridge-codex");
+      await expect
+        .poll(() => daemon.agentManager.getAgent(agentId)?.activeTurnId, { timeout: 15_000 })
+        .toBe("answer-turn");
+      expect(daemon.agentManager.getAgent(agentId)?.pendingPermissions.size).toBe(0);
+    } finally {
+      stopObserving();
+    }
   } finally {
     await client?.close();
     await daemon.stop();

@@ -14,6 +14,9 @@ export const pointerSchema = z
     data: z.object({ threadId: z.string().min(1).max(200), codexHome: z.string().min(1) }).strict(),
   })
   .strict();
+export const threadStatusSchema = z.object({
+  type: z.enum(["notLoaded", "idle", "systemError", "active"]),
+});
 export const threadSchema = z.object({
   id: z.string(),
   cwd: z.string(),
@@ -27,7 +30,7 @@ export const threadSchema = z.object({
   updatedAt: z.number(),
   model: z.string().nullable(),
   reasoningEffort: z.string().nullable(),
-  status: z.object({ type: z.string() }),
+  status: threadStatusSchema,
 });
 export const turnSchema = z.object({
   id: z.string(),

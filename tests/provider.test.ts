@@ -8,10 +8,11 @@ import { AGENT_ID_ENV, CAPABILITIES, createBridgeProvider } from "../src/provide
 import type { RpcClient, RpcMessage } from "../src/rpc.js";
 
 const threadId = "019a0000-0000-7000-8000-000000000001";
+const codexHome = "/tmp/bridge-test-home";
 const launch: ProviderLaunch = {
   command: "codex",
   args: [],
-  env: { CODEX_HOME: "/tmp/bridge-test-home" },
+  env: { CODEX_HOME: codexHome },
 };
 const nativeThread = {
   id: threadId,
@@ -103,7 +104,7 @@ const open: Extract<ProviderInput, { type: "session.open" }> = {
   type: "session.open",
   requestId: "open",
   sessionId: "paseo-session",
-  persistence: { version: 1, data: { threadId, codexHome: "/tmp/bridge-test-home" } },
+  persistence: { version: 1, data: { threadId, codexHome } },
   history: "replay",
   config: {
     cwd: "/tmp",
@@ -117,6 +118,539 @@ const open: Extract<ProviderInput, { type: "session.open" }> = {
 };
 
 describe("shared-thread provider", () => {
+  it("does not answer an async question in a newer turn admitted during the host lookup", async () => {
+    const daemon = new NativeDaemon();
+    daemon.item = {
+      ...daemon.item,
+      id: "async-question",
+      text: "Choose",
+      delivery: "async",
+      questions: [{ title: "Choose", options: ["One", "Two"] }],
+    } as typeof daemon.item;
+    const readHostTurn = async () => {
+      daemon.activeTurn = "newer-turn";
+      daemon.emit("turn/completed", {
+        threadId,
+        turn: { id: "native-turn", status: "completed", error: null },
+      });
+      daemon.emit("turn/started", {
+        threadId,
+        turn: { id: "newer-turn", status: "inProgress", error: null },
+      });
+      return "newer-turn";
+    };
+    const bridge = createBridgeProvider(readHostTurn, async () => daemon);
+    const connection = await bridge.registration.connect({
+      versions: [1],
+      capabilities: [...CAPABILITIES],
+      launch,
+    });
+    try {
+      await connection.send(open);
+      await bridge.activate("agent-1");
+      await expect(
+        connection.send({
+          type: "session.permission",
+          sessionId: open.sessionId,
+          permissionId: "async-question",
+          response: { behavior: "allow", updatedInput: { answers: { "Question 1": "One" } } },
+        }),
+      ).rejects.toThrow(/turn.*(differ|changed)|question.*no longer pending/i);
+      expect(
+        daemon.calls.some((call) => call.method === "turn/steer" || call.method === "turn/start"),
+      ).toBe(false);
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("retains unanswered fields and rejects a stale answer after another native client replies without a notification", async () => {
+    const daemon = new NativeDaemon();
+    const question = {
+      id: "async-question",
+      type: "agentMessage",
+      delivery: "async",
+      text: "Choose and explain",
+      questions: [{ title: "Choose", options: ["One", "Two"] }, { title: "Explain" }],
+    };
+    const reply = (index: number, answer: string, target = question) => ({
+      id: `${target.id}-reply-${index}`,
+      type: "userMessage",
+      content: [
+        {
+          type: "text",
+          text: `<send_user_message_question_reply>\n${JSON.stringify([
+            {
+              answer,
+              question: target.questions[index]?.title,
+              questionItemId: JSON.stringify(["request_user_input_async", target.id, index]),
+            },
+          ])}\n</send_user_message_question_reply>`,
+        },
+      ],
+    });
+    const items = [question, reply(0, "One")];
+    const original = daemon.request.bind(daemon);
+    let holdNextRead = false;
+    let releaseStaleRead: (() => void) | undefined;
+    daemon.request = async (method, params) => {
+      if (method !== "thread/items/list") return original(method, params);
+      const result = {
+        data: items.map((item) => ({
+          turnId: "native-turn",
+          item,
+          startedAtMs: 1234,
+          completedAtMs: null,
+        })),
+        nextCursor: null,
+      };
+      if (!holdNextRead) return result;
+      holdNextRead = false;
+      return new Promise((resolve) => {
+        releaseStaleRead = () => resolve(result);
+      });
+    };
+    const bridge = createBridgeProvider(
+      async () => "native-turn",
+      async () => daemon,
+    );
+    const connection = await bridge.registration.connect({
+      versions: [1],
+      capabilities: [...CAPABILITIES],
+      launch,
+    });
+    const events: ProviderEvent[] = [];
+    connection.onEvent((event) => events.push(event));
+    try {
+      await connection.send(open);
+      await bridge.activate("agent-1");
+      const pending = events.find((event) => event.type === "session.permission");
+      expect(pending).toMatchObject({
+        request: {
+          id: "async-question",
+          input: { questions: [{ header: "Question 2", question: "Explain" }] },
+        },
+      });
+      if (pending?.type !== "session.permission") throw new Error("No pending question");
+      expect(pending.request.input?.["questions"]).toHaveLength(1);
+      const additionalQuestion = {
+        ...question,
+        id: "additional-question",
+        text: "Another native question",
+        questions: [{ title: "Continue?", options: ["Yes", "No"] }],
+      };
+      items.push(additionalQuestion);
+      holdNextRead = true;
+      daemon.emit("item/agentMessage/delta", {
+        threadId,
+        turnId: "native-turn",
+        itemId: additionalQuestion.id,
+        delta: " more context",
+      });
+      await vi.waitFor(() => expect(releaseStaleRead).toBeDefined());
+      items.push(reply(0, "Yes", additionalQuestion));
+      // This fresh read leaves the cached pending question unchanged, but must still
+      // invalidate the older read containing an already answered additional question.
+      await expect(
+        connection.send({
+          type: "session.permission",
+          sessionId: open.sessionId,
+          permissionId: "async-question",
+          response: { behavior: "deny" },
+        }),
+      ).rejects.toThrow("Codex has no shared async-question dismissal");
+      const eventCountAfterFreshRead = events.length;
+      // Activation is the public refresh barrier: it cannot finish before the older read.
+      const refreshed = bridge.activate("agent-1");
+      releaseStaleRead?.();
+      await refreshed;
+      expect(
+        events
+          .slice(eventCountAfterFreshRead)
+          .filter((event) => event.type === "session.permission"),
+      ).toEqual([]);
+      items.push(reply(1, "Already answered in the terminal"));
+      await expect(
+        connection.send({
+          type: "session.permission",
+          sessionId: open.sessionId,
+          permissionId: "async-question",
+          response: {
+            behavior: "allow",
+            updatedInput: { answers: { "Question 2": "Stale Android answer" } },
+          },
+        }),
+      ).rejects.toThrow("Question already answered in Codex");
+      expect(
+        daemon.calls.some((call) => call.method === "turn/steer" || call.method === "turn/start"),
+      ).toBe(false);
+      expect(events).toContainEqual({
+        type: "session.permission_resolved",
+        sessionId: open.sessionId,
+        permissionId: "async-question",
+      });
+    } finally {
+      releaseStaleRead?.();
+      await connection.close();
+    }
+  });
+
+  it("reconciles idle and closed thread notices using the native terminal outcome", async () => {
+    const daemon = new NativeDaemon();
+    let status = "inProgress";
+    let currentTurn = "native-turn";
+    const original = daemon.request.bind(daemon);
+    daemon.request = async (method, params) => {
+      if (method === "thread/read")
+        return {
+          thread: {
+            ...nativeThread,
+            status: {
+              type:
+                status === "inProgress"
+                  ? "active"
+                  : status === "interrupted"
+                    ? "notLoaded"
+                    : "idle",
+            },
+          },
+        };
+      if (method === "thread/turns/list")
+        return { data: [{ id: currentTurn, status, error: null }], nextCursor: null };
+      return original(method, params);
+    };
+    const bridge = createBridgeProvider(
+      async () => currentTurn,
+      async () => daemon,
+    );
+    const connection = await bridge.registration.connect({
+      versions: [1],
+      capabilities: [...CAPABILITIES],
+      launch,
+    });
+    const events: ProviderEvent[] = [];
+    connection.onEvent((event) => events.push(event));
+    try {
+      await connection.send(open);
+      await bridge.activate("agent-1");
+      events.length = 0;
+      status = "completed";
+      daemon.emit("thread/status/changed", { threadId, status: { type: "idle" } });
+      await vi.waitFor(() =>
+        expect(events).toContainEqual({
+          type: "session.turn",
+          sessionId: open.sessionId,
+          turnId: currentTurn,
+          state: "completed",
+        }),
+      );
+
+      currentTurn = "later-turn";
+      status = "inProgress";
+      daemon.emit("turn/started", {
+        threadId,
+        turn: { id: currentTurn, status, error: null },
+      });
+      status = "interrupted";
+      daemon.emit("thread/closed", { threadId });
+      await vi.waitFor(() =>
+        expect(events).toContainEqual({
+          type: "session.turn",
+          sessionId: open.sessionId,
+          turnId: currentTurn,
+          state: "canceled",
+        }),
+      );
+      expect(events.some((event) => event.type === "session.closed")).toBe(false);
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("reports missing native history without inventing a terminal turn", async () => {
+    const daemon = new NativeDaemon();
+    let reconnecting = false;
+    let historyAvailable = false;
+    const bridge = createBridgeProvider(
+      async () => "native-turn",
+      async () => {
+        if (!reconnecting) return daemon;
+        const recovered = new NativeDaemon();
+        const original = recovered.request.bind(recovered);
+        recovered.request = async (method, params) => {
+          if (method === "thread/turns/list")
+            return {
+              data: historyAvailable
+                ? [{ id: "native-turn", status: "completed", error: null }]
+                : [],
+              nextCursor: null,
+            };
+          return original(method, params);
+        };
+        return recovered;
+      },
+    );
+    const connection = await bridge.registration.connect({
+      versions: [1],
+      capabilities: [...CAPABILITIES],
+      launch,
+    });
+    const events: ProviderEvent[] = [];
+    connection.onEvent((event) => events.push(event));
+    try {
+      await connection.send(open);
+      await bridge.activate("agent-1");
+      events.length = 0;
+      const original = daemon.request.bind(daemon);
+      daemon.request = async (method, params) =>
+        method === "thread/turns/list" ? { data: [], nextCursor: null } : original(method, params);
+      await expect(bridge.activate("agent-1")).rejects.toThrow("outcome is unknown");
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: "session.notice",
+          notice: expect.objectContaining({
+            severity: "warning",
+            description: expect.stringContaining("outcome is unknown"),
+          }),
+        }),
+      );
+      expect(events.some((event) => event.type === "session.turn")).toBe(false);
+      reconnecting = true;
+      await daemon.close();
+      await vi.waitFor(
+        () =>
+          expect(events).toContainEqual(
+            expect.objectContaining({
+              type: "session.notice",
+              notice: expect.objectContaining({
+                description: expect.stringContaining(
+                  "Codex disconnected: Codex turn native-turn is missing",
+                ),
+              }),
+            }),
+          ),
+        { timeout: 5000 },
+      );
+      historyAvailable = true;
+      await vi.waitFor(
+        () =>
+          expect(events).toContainEqual({
+            type: "session.turn",
+            sessionId: open.sessionId,
+            turnId: "native-turn",
+            state: "completed",
+          }),
+        { timeout: 6000 },
+      );
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("keeps a newer turn steerable when an older reconciliation response arrives", async () => {
+    const daemon = new NativeDaemon();
+    const bridge = createBridgeProvider(
+      async () => daemon.activeTurn,
+      async () => daemon,
+    );
+    const connection = await bridge.registration.connect({
+      versions: [1],
+      capabilities: [...CAPABILITIES],
+      launch,
+    });
+    const events: ProviderEvent[] = [];
+    connection.onEvent((event) => events.push(event));
+    try {
+      await connection.send(open);
+      await bridge.activate("agent-1");
+      events.length = 0;
+      const original = daemon.request.bind(daemon);
+      daemon.request = async (method, params) => {
+        if (method === "thread/turns/list") {
+          daemon.activeTurn = "newer-turn";
+          daemon.emit("turn/completed", {
+            threadId,
+            turn: { id: "native-turn", status: "completed", error: null },
+          });
+          daemon.emit("turn/started", {
+            threadId,
+            turn: { id: "newer-turn", status: "inProgress", error: null },
+          });
+          return {
+            data: [{ id: "native-turn", status: "completed", error: null }],
+            nextCursor: null,
+          };
+        }
+        return original(method, params);
+      };
+      await bridge.activate("agent-1");
+      await connection.send({
+        type: "session.prompt",
+        sessionId: open.sessionId,
+        prompt: {
+          clientMessageId: "newer-steer",
+          delivery: "steer",
+          input: { type: "message", content: [{ type: "text", text: "Continue the new turn" }] },
+        },
+      });
+      expect(
+        events
+          .filter((event) => event.type === "session.turn")
+          .map((event) => [event.turnId, event.state]),
+      ).toEqual([
+        ["native-turn", "completed"],
+        ["newer-turn", "started"],
+      ]);
+      expect(daemon.calls).toContainEqual({
+        method: "turn/steer",
+        params: {
+          threadId,
+          expectedTurnId: "newer-turn",
+          clientUserMessageId: "newer-steer",
+          input: [{ type: "text", text: "Continue the new turn", text_elements: [] }],
+        },
+      });
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("blocks activation and prompts until reconnect reconciliation finishes", async () => {
+    const first = new NativeDaemon();
+    const recovered = new NativeDaemon();
+    const original = recovered.request.bind(recovered);
+    let turnReads = 0;
+    let release: (() => void) | undefined;
+    recovered.request = async (method, params) => {
+      if (method === "thread/turns/list") {
+        turnReads++;
+        if (turnReads === 2)
+          await new Promise<void>((resolve) => {
+            release = resolve;
+          });
+        return {
+          data: [{ id: "native-turn", status: "completed", error: null }],
+          nextCursor: null,
+        };
+      }
+      return original(method, params);
+    };
+    let reconnecting = false;
+    const bridge = createBridgeProvider(
+      async () => "native-turn",
+      async () => (reconnecting ? recovered : first),
+    );
+    const connection = await bridge.registration.connect({
+      versions: [1],
+      capabilities: [...CAPABILITIES],
+      launch,
+    });
+    const events: ProviderEvent[] = [];
+    connection.onEvent((event) => events.push(event));
+    try {
+      await connection.send(open);
+      await bridge.activate("agent-1");
+      events.length = 0;
+      reconnecting = true;
+      await first.close();
+      await vi.waitFor(() => expect(release).toBeDefined(), { timeout: 5000 });
+      await expect(bridge.activate("agent-1")).rejects.toThrow("synchronizing");
+      await connection.send({
+        type: "session.prompt",
+        sessionId: open.sessionId,
+        prompt: {
+          clientMessageId: "during-reconnect",
+          delivery: "auto",
+          input: { type: "message", content: [{ type: "text", text: "Continue" }] },
+        },
+      });
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: "session.prompt_result",
+          result: {
+            type: "failed",
+            error: {
+              message: "Codex attachment is disconnected or synchronizing; operation was not sent",
+            },
+          },
+        }),
+      );
+      release?.();
+      await vi.waitFor(() =>
+        expect(events.filter((event) => event.type === "session.turn")).toEqual([
+          {
+            type: "session.turn",
+            sessionId: open.sessionId,
+            turnId: "native-turn",
+            state: "completed",
+          },
+        ]),
+      );
+    } finally {
+      release?.();
+      await connection.close();
+    }
+  });
+
+  it("keeps a healthy attachment steerable when another thread has missing history", async () => {
+    const daemon = new NativeDaemon();
+    let missingHistory = false;
+    const original = daemon.request.bind(daemon);
+    daemon.request = async (method, params) => {
+      const requestedId = (params as { threadId?: string }).threadId;
+      if (method === "thread/resume" || method === "thread/read")
+        return { thread: { ...nativeThread, id: requestedId } };
+      if (method === "thread/turns/list" && requestedId === threadId && missingHistory)
+        return { data: [], nextCursor: null };
+      return original(method, params);
+    };
+    const bridge = createBridgeProvider(
+      async () => "native-turn",
+      async () => daemon,
+    );
+    const connection = await bridge.registration.connect({
+      versions: [1],
+      capabilities: [...CAPABILITIES],
+      launch,
+    });
+    const events: ProviderEvent[] = [];
+    connection.onEvent((event) => events.push(event));
+    try {
+      await connection.send(open);
+      await bridge.activate("agent-1");
+      await connection.send({
+        ...open,
+        requestId: "open-healthy",
+        sessionId: "healthy-session",
+        persistence: {
+          version: 1,
+          data: { threadId: "healthy-thread", codexHome },
+        },
+        config: { ...open.config, env: { [AGENT_ID_ENV]: "healthy-agent" } },
+      });
+      await bridge.activate("healthy-agent");
+      missingHistory = true;
+      await expect(bridge.activate("agent-1")).rejects.toThrow("outcome is unknown");
+      await connection.send({
+        type: "session.prompt",
+        sessionId: "healthy-session",
+        prompt: {
+          clientMessageId: "healthy-steer",
+          delivery: "steer",
+          input: { type: "message", content: [{ type: "text", text: "Continue" }] },
+        },
+      });
+      expect(events).toContainEqual({
+        type: "session.prompt_result",
+        sessionId: "healthy-session",
+        clientMessageId: "healthy-steer",
+        result: { type: "steer", turnId: "native-turn" },
+      });
+    } finally {
+      await connection.close();
+    }
+  });
+
   it("does not revive a disconnected turn when a later native turn completes during reattachment", async () => {
     const first = new NativeDaemon();
     const recovered = new NativeDaemon();

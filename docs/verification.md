@@ -38,13 +38,39 @@ The package check copies tracked working-tree inputs into a fresh directory, run
 
 Behavioral failures were observed before the corresponding fixes. One transport API extension, the `initialized` notification sender, did not have a separate symbol-level RED test; the real handshake failure and subsequent native contract proof cover its end outcome.
 
-## Final gate
+## Turn-state reconciliation — 2026-10-26
 
-`pnpm verify` passes lint, strict types, build, **30 tests across six files**, and the extracted-package host scenario (**one test**, reusing the owning integration proof). `pnpm format` runs before that gate. All test-owned proxies and daemons exit through explicit cleanup.
+The released-host scenario now persists native completion without broadcasting either completion or thread-status notifications. Before the fix, Paseo remained `running` with the old turn after the ten-second assertion deadline. The same scenario requires automatic transition to idle under the original agent ID and one completion across subsequent discovery passes. The packed-plugin scenario reuses this proof.
+
+Provider regressions cover idle and closed lifecycle notices, native cancellation, a newer turn arriving during an older read, and missing history through repeated reconnection. Missing history first reproduced absent user-visible diagnostics, then loss of the unresolved Paseo turn after unsuccessful rehydration. The bridge retains the last published turn ID until its native outcome is known; it does not fabricate a terminal result. Existing bootstrap, prompt-admission, archive-exclusion and mutation-replay proofs remain in place.
+
+Review exposed two additional regressions: activation during reconnect could publish completion twice, and a missing turn could close a proxy shared with healthy attachments. Focused failures preceded the corrections. Activation and prompts now remain blocked through the complete reattach operation; per-thread reconciliation errors remain isolated and retryable. Snapshot failures retain their existing proxy-restart recovery.
+
+Periodic reconciliation reads thread and turn metadata. Older turn metadata is paged only when the remembered turn is not the latest one, under the existing history bounds. Lifecycle-triggered checks share the existing snapshot scheduler and failure recovery. Native notification revisions and RPC identity prevent stale current-state reads from overwriting newer activity.
+
+## Async questions — 2026-10-28
+
+The released-host scenario first failed because a native `agentMessage` with `delivery: "async"` produced no pending question. It now checks selectable and free-text fields, sends the reply through Paseo's public permission API, and verifies the exact native question-ID envelope. The existing restart scenario verifies that answered questions do not reopen. Package smoke reuses this host proof.
+
+The late-answer regression then reproduced question loss after native turn completion. The host scenario now keeps that question pending through completion and plugin reload, submits an answer while idle, and verifies one native `turn/start` with the original question identity in a different turn's history. A further reload must not restore the answered form. This extends the existing host owner rather than adding a separate mock-only lifecycle test.
+
+Provider regressions cover partial answers from another native client, an externally answered question whose notification was missed, and a turn switch during answer admission. The turn-switch test failed before the guard pinned the answer to its original native turn. Review then reproduced an older history read reopening an answered question, including when the newer pending set was unchanged. Every accepted question reconciliation now advances the history revision. The same guarded steering path serves ordinary prompts and async answers.
+
+The native format and input semantics were checked against the installed 0.164.0 generated protocol and the pinned [reply parser](https://github.com/openai/codex/blob/rust-v0.164.0/codex-rs/tui/src/async_question_reply.rs), [question identity](https://github.com/openai/codex/blob/rust-v0.164.0/codex-rs/tui/src/bottom_pane/async_questions/state.rs), and [start-or-steer contract](https://github.com/openai/codex/blob/rust-v0.164.0/codex-rs/app-server/tests/suite/v2/turn_start.rs#L654). The native TUI's transient card lifetime is not used as the remote answer-validity rule. Interactive Android acceptance remains separate from these host and native-boundary checks.
+
+## Project gate
+
+Run `pnpm format` followed by `pnpm verify` for formatting, lint, strict types, build, behavioral tests, and the extracted-package host scenario. The package scenario reuses the owning integration proof. All test-owned proxies and daemons exit through explicit cleanup.
 
 **Tests:** Pruned one redundant CLI-help absence assertion from package smoke; the current one-shot usage contract remains checked. The existing host scenario owns lifecycle behavior, without new duplicate test cases. The long provider test file shares one native fixture and covers one attachment lifecycle; it was not split merely for line count.
 
 **Simplify:** The original implementation pass removed redundant status validation. The lifecycle change received its own post-verification pass: no-op; startup, cancellation and client ownership remain explicit, with no extra wrapper or process to remove.
+
+The reconciliation cleanup pass was also a no-op: snapshot reading is shared by initial hydration and reconnect, one scheduler owns pending refreshes, and the published turn ID is an intentional host-state snapshot needed across unsuccessful recovery. Further restructuring would change lifecycle or error-ordering behavior rather than remove redundant code.
+
+The async-question cleanup pass named the shared native question-tool identifier and narrowed idle-turn parameters to their using branch. No duplicate-outcome tests were added; the stale-read variant extends the external-answer owner.
+
+The late-answer cleanup pass was a no-op: normal prompts and question replies already share native delivery, and the refresh adds no second question-history cache. The new completion/reload scenario extends the existing host owner; no redundant test was added.
 
 **Diagram:** `dot -Tdot docs/architecture.dot -o /dev/null` and Graphviz SVG generation completed without diagnostics. The render pipeline adds `role="img" aria-label="Plugin-owned discovery and shared Codex execution"` to the SVG root. The plugin-process group contains the provider and discovery loop. `rsvg-convert -w 1800 docs/architecture.svg -o /tmp/pbc-lifecycle-architecture.png` rendered the saved SVG for visual inspection: no clipped nodes, overlapping labels, or edges through unrelated nodes. SVG point-coordinate DPI is explicit in the DOT source; the installed Graphviz renderer clipped the higher-DPI output.
 
