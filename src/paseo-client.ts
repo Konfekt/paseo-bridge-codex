@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createHostClient } from "@getpaseo/client/node";
-// FALLBACK: Paseo 0.13.0's daemon-control export pulls createRequire(import.meta.url)
+// FALLBACK: Paseo's daemon-control export pulls createRequire(import.meta.url)
 // into its CommonJS plugin bundle. Import the pinned owning modules until that export is bundle-safe.
 import { readLocalCredentialForTarget } from "../node_modules/@getpaseo/server/dist/server/server/local-credential.js";
 import { resolvePaseoHome } from "../node_modules/@getpaseo/server/dist/server/server/paseo-home.js";

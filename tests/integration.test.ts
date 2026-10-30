@@ -225,7 +225,7 @@ test("plugin lifecycle discovers, restores and steers terminal threads without a
     {
       listen: "127.0.0.1:0",
       paseoHome,
-      daemonVersion: "0.13.0",
+      daemonVersion: "0.14.0",
       corsAllowedOrigins: [],
       hostnames: true,
       mcpEnabled: false,

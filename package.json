@@ -26,12 +26,12 @@
     "verify": "pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm package:smoke"
   },
   "dependencies": {
-    "@getpaseo/client": "0.13.0",
-    "@getpaseo/plugin": "0.13.0",
-    "@getpaseo/protocol": "0.13.0",
-    "@getpaseo/server": "0.13.0",
-    "zod": "4.6.7",
-    "ws": "8.22.0"
+    "@getpaseo/client": "0.14.0",
+    "@getpaseo/plugin": "0.14.0",
+    "@getpaseo/protocol": "0.14.0",
+    "@getpaseo/server": "0.14.0",
+    "ws": "8.22.0",
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.2",

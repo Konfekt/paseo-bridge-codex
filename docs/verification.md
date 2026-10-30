@@ -4,6 +4,8 @@
 
 Checked 2026-10-25 against released Paseo **0.13.0** and Codex **0.164.0** on Linux. Runtime dependencies are pinned in the package and lockfile. Paseo source reference: [d34d17a9072149320ace35ec2a2e5c7dcd992cb3](https://github.com/getpaseo/paseo/tree/d34d17a9072149320ace35ec2a2e5c7dcd992cb3). Native protocol evidence uses the released executable and [Codex release](https://github.com/openai/codex/releases/tag/rust-v0.164.0).
 
+The current target is **Paseo 0.14.0 + Codex 0.164.0**, selected on 2026-10-30 after the local CLI upgrade removed the old running daemon's package path. All four Paseo dependencies and the plugin requirement target 0.14.0; no compatibility branch or older-version support is retained. The relevant provider, hook, RPC and client interfaces remain compatible. The released-host and packed-plugin scenarios run against the new pinned server. Historical findings below retain their original release context. Release source: [Paseo v0.14.0](https://github.com/getpaseo/paseo/tree/v0.14.0).
+
 The automated tests do not update global CLIs, edit live Paseo configuration, or use user sessions and credentials. Git publication and installation into the local Paseo daemon are separate, explicitly authorized operations, not part of the test suite.
 
 ## Owning proofs
