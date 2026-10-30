@@ -103,20 +103,13 @@ export function projectItem(value: unknown): ProviderTimelineItem {
       };
     }
     default: {
-      // Preserve unrepresented native content as labelled JSON, rather than inventing semantics.
+      // Paseo inserts startup notifications twice on import; native record cards retain identity.
       const nativeStatus = item.status;
-      if (nativeStatus === undefined || !toolStatusSchema.safeParse(nativeStatus).success) {
-        return {
-          id,
-          type: "notification",
-          level: "info",
-          message: JSON.stringify(item, null, 2),
-        };
-      }
-      const status = toolStatusSchema.parse(nativeStatus);
+      const parsedStatus = toolStatusSchema.safeParse(nativeStatus);
+      const status = parsedStatus.success ? parsedStatus.data : undefined;
       const detail = {
         type: "plain_text" as const,
-        label: item.type,
+        label: `Codex native record: ${item.type}`,
         text: JSON.stringify(item, null, 2),
       };
       if (status === "failed")
@@ -136,7 +129,11 @@ export function projectItem(value: unknown): ProviderTimelineItem {
         name: item.type,
         detail,
         status:
-          status === "inProgress" ? "running" : status === "completed" ? "completed" : "canceled",
+          status === "inProgress"
+            ? "running"
+            : status === undefined || status === "completed"
+              ? "completed"
+              : "canceled",
         error: null,
       };
     }

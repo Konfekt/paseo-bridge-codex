@@ -7,6 +7,7 @@ import { z } from "zod";
 const replyOpen = "<send_user_message_question_reply>";
 const replyClose = "</send_user_message_question_reply>";
 const asyncQuestionName = "request_user_input_async";
+const MAX_QUESTION_SCAN_BYTES = 8 * 1024 * 1024;
 export const asyncQuestionSchema = z.object({
   type: z.literal("agentMessage"),
   delivery: z.literal("async"),
@@ -36,63 +37,99 @@ export type AsyncQuestion = {
   questions: Array<{ index: number; title: string; id: string }>;
 };
 
-/** A question remains unanswered until a native reply references its identity. */
-export function projectAsyncQuestions(items: unknown[]): Map<string, AsyncQuestion> {
-  const answered = new Set<string>();
-  for (const item of items) {
+/** One native scan retains question metadata, never ordinary historical payloads. */
+export class AsyncQuestionProjection {
+  private readonly answered = new Set<string>();
+  private readonly messages = new Map<string, z.infer<typeof asyncQuestionSchema>>();
+  private sizeBytes = 0;
+
+  add(item: unknown): void {
+    const question = asyncQuestionSchema.safeParse(item);
+    if (question.success) {
+      const message = question.data;
+      if (
+        message.questions.every((_, index) =>
+          this.answered.has(JSON.stringify([asyncQuestionName, message.id, index])),
+        )
+      )
+        return;
+      const previous = this.messages.get(message.id);
+      this.sizeBytes +=
+        Buffer.byteLength(JSON.stringify(message)) -
+        (previous ? Buffer.byteLength(JSON.stringify(previous)) : 0);
+      this.messages.set(message.id, message);
+      if (this.sizeBytes > MAX_QUESTION_SCAN_BYTES)
+        throw new Error("Codex question scan metadata exceeded 8 MiB");
+      return;
+    }
     const user = userSchema.safeParse(item);
-    if (!user.success) continue;
+    if (!user.success) return;
     const content = user.data.content.filter(
       (part) => part.type !== "skill" && part.type !== "mention",
     );
-    if (content.length !== 1 || content[0]?.type !== "text") continue;
+    if (content.length !== 1 || content[0]?.type !== "text") return;
     const text = content[0].text?.trim() ?? "";
-    if (!text.startsWith(replyOpen) || !text.endsWith(replyClose)) continue;
+    if (!text.startsWith(replyOpen) || !text.endsWith(replyClose)) return;
     let value: unknown;
     try {
       value = JSON.parse(text.slice(replyOpen.length, -replyClose.length));
     } catch {
       // Ordinary user text can resemble an envelope without being a native reply.
-      continue;
+      return;
     }
     const parsed = repliesSchema.safeParse(value);
-    if (!parsed.success) continue;
-    for (const reply of Array.isArray(parsed.data) ? parsed.data : [parsed.data])
-      answered.add(reply.questionItemId);
+    if (!parsed.success) return;
+    for (const reply of Array.isArray(parsed.data) ? parsed.data : [parsed.data]) {
+      if (!this.answered.has(reply.questionItemId)) {
+        this.answered.add(reply.questionItemId);
+        this.sizeBytes += Buffer.byteLength(reply.questionItemId);
+      }
+    }
+    for (const [id, message] of this.messages)
+      if (
+        message.questions.every((_, index) =>
+          this.answered.has(JSON.stringify([asyncQuestionName, id, index])),
+        )
+      ) {
+        this.messages.delete(id);
+        this.sizeBytes -= Buffer.byteLength(JSON.stringify(message));
+      }
+    if (this.sizeBytes > MAX_QUESTION_SCAN_BYTES)
+      throw new Error("Codex question scan metadata exceeded 8 MiB");
   }
-  const pending = new Map<string, AsyncQuestion>();
-  for (const item of items) {
-    const parsed = asyncQuestionSchema.safeParse(item);
-    if (!parsed.success) continue;
-    const message = parsed.data;
-    const questions = message.questions
-      .map((question, index) => ({
-        ...question,
-        index,
-        id: JSON.stringify([asyncQuestionName, message.id, index]),
-      }))
-      .filter((question) => !answered.has(question.id));
-    if (!questions.length) continue;
-    pending.set(message.id, {
-      questions: questions.map(({ index, title, id }) => ({ index, title, id })),
-      request: {
-        id: message.id,
-        name: asyncQuestionName,
-        kind: "question",
-        title: "Codex question",
-        input: {
-          questions: questions.map((question) => ({
-            header: `Question ${question.index + 1}`,
-            question: question.title,
-            options: (question.options ?? []).map((label) => ({ label })),
-            multiSelect: false,
-            allowOther: true,
-          })),
+
+  pending(): Map<string, AsyncQuestion> {
+    const pending = new Map<string, AsyncQuestion>();
+    for (const message of this.messages.values()) {
+      const questions = message.questions
+        .map((question, index) => ({
+          ...question,
+          index,
+          id: JSON.stringify([asyncQuestionName, message.id, index]),
+        }))
+        .filter((question) => !this.answered.has(question.id));
+      if (!questions.length) continue;
+      pending.set(message.id, {
+        questions: questions.map(({ index, title, id }) => ({ index, title, id })),
+        request: {
+          id: message.id,
+          name: asyncQuestionName,
+          kind: "question",
+          title: "Codex question",
+          input: {
+            questions: questions.map((question) => ({
+              header: `Question ${question.index + 1}`,
+              question: question.title,
+              options: (question.options ?? []).map((label) => ({ label })),
+              multiSelect: false,
+              allowOther: true,
+            })),
+          },
         },
-      },
-    });
+      });
+    }
+    return pending;
   }
-  return pending;
 }
 
 export function asyncQuestionReply(

@@ -68,12 +68,20 @@ it("renders reasoning and full shell output while retaining other native content
       result: "data",
     }),
   ).toMatchObject({
-    type: "notification",
-    message: expect.stringContaining("native_custom_status"),
+    type: "tool_call",
+    callId: "image",
+    detail: {
+      label: "Codex native record: imageGeneration",
+      text: expect.stringContaining("native_custom_status"),
+    },
   });
   expect(projectItem({ type: "webSearch", id: "search", query: "Q" })).toMatchObject({
-    type: "notification",
-    message: expect.stringContaining('"query": "Q"'),
+    type: "tool_call",
+    callId: "search",
+    detail: {
+      label: "Codex native record: webSearch",
+      text: expect.stringContaining('"query": "Q"'),
+    },
   });
   expect(() => projectItem({ type: "agentMessage", id: "bad", text: 12 })).toThrow();
 });

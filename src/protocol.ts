@@ -1,13 +1,15 @@
+import { createHash } from "node:crypto";
 import { isAbsolute, resolve } from "node:path";
 import type { ProviderLaunch, ProviderPersistence } from "@getpaseo/plugin/server/provider";
 import { z } from "zod";
 import type { RpcClient } from "./rpc.js";
 
 export const CODEX_VERSION = "0.164.0";
-export const MAX_ITEMS = 10_000;
-export const MAX_SNAPSHOT_BYTES = 64 * 1024 * 1024;
+const MAX_LIST_ITEMS = 10_000;
 const PAGE_SIZE = 100;
-const MAX_PAGES = 200;
+const MAX_LIST_PAGES = 200;
+const HISTORY_SCAN_TIMEOUT_MS = 60_000;
+const MAX_CURSOR_FINGERPRINTS = 256;
 export const pointerSchema = z
   .object({
     version: z.literal(1),
@@ -77,16 +79,85 @@ export async function readPages<T>(
   const result: T[] = [];
   const cursors = new Set<string>();
   let cursor: string | null = null;
-  for (let page = 0; page < MAX_PAGES; page++) {
+  for (let page = 0; page < MAX_LIST_PAGES; page++) {
     const response = z
       .object({ data: z.array(schema), nextCursor: z.string().nullable() })
       .parse(await rpc.request(method, { ...params, limit: PAGE_SIZE, cursor }));
     result.push(...response.data);
-    if (result.length > MAX_ITEMS) throw new Error(`${method} item limit exceeded (${MAX_ITEMS})`);
+    if (result.length > MAX_LIST_ITEMS)
+      throw new Error(`${method} item limit exceeded (${MAX_LIST_ITEMS})`);
     if (response.nextCursor === null) return result;
     if (cursors.has(response.nextCursor)) throw new Error(`${method} repeated pagination cursor`);
     cursors.add(response.nextCursor);
     cursor = response.nextCursor;
   }
-  throw new Error(`${method} page limit exceeded (${MAX_PAGES})`);
+  throw new Error(`${method} page limit exceeded (${MAX_LIST_PAGES})`);
+}
+
+export function readHistory(
+  rpc: RpcClient,
+  params: { threadId: string; turnId?: string },
+  isCurrent: () => boolean,
+): AsyncGenerator<z.infer<typeof itemEntrySchema>> {
+  return readNativeHistory(
+    rpc,
+    "thread/items/list",
+    { ...params, sortDirection: "asc" },
+    itemEntrySchema,
+    isCurrent,
+  );
+}
+
+export function readTurns(
+  rpc: RpcClient,
+  threadId: string,
+  isCurrent: () => boolean,
+): AsyncGenerator<NativeTurn> {
+  return readNativeHistory(
+    rpc,
+    "thread/turns/list",
+    { threadId, sortDirection: "desc", itemsView: "notLoaded" },
+    turnSchema,
+    isCurrent,
+  );
+}
+
+/** History length is unrestricted; each scan has bounded frames, time and cursor state. */
+async function* readNativeHistory<T>(
+  rpc: RpcClient,
+  method: string,
+  params: Record<string, unknown>,
+  schema: z.ZodType<T>,
+  isCurrent: () => boolean,
+): AsyncGenerator<T> {
+  const deadline = Date.now() + HISTORY_SCAN_TIMEOUT_MS;
+  let cursor: string | null = null;
+  // Native cursors are opaque. Retain hashes rather than arbitrary cursor payloads.
+  const cursors = new Set<string>();
+  while (true) {
+    if (!isCurrent()) throw new Error("Codex attachment changed during history scan");
+    if (Date.now() >= deadline) throw new Error("Codex history scan exceeded 60 seconds");
+    const response = z
+      .object({ data: z.array(schema).max(PAGE_SIZE), nextCursor: z.string().nullable() })
+      .parse(
+        await rpc.request(method, {
+          ...params,
+          limit: PAGE_SIZE,
+          cursor,
+        }),
+      );
+    if (!isCurrent()) throw new Error("Codex attachment changed during history scan");
+    if (Date.now() >= deadline) throw new Error("Codex history scan exceeded 60 seconds");
+    for (const entry of response.data) yield entry;
+    if (response.nextCursor === null) return;
+    const fingerprint = createHash("sha256").update(response.nextCursor).digest("hex");
+    if (!response.data.length || cursors.has(fingerprint))
+      throw new Error(`${method} pagination did not advance`);
+    cursors.add(fingerprint);
+    if (cursors.size > MAX_CURSOR_FINGERPRINTS) {
+      const oldest = cursors.values().next().value;
+      if (oldest !== undefined) cursors.delete(oldest);
+    }
+    cursor = response.nextCursor;
+  }
 }

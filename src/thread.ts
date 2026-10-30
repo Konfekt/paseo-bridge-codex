@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type {
   ProviderEvent,
   ProviderInput,
@@ -9,20 +9,18 @@ import type {
 import { z } from "zod";
 import { permissionId, permissionResult, projectPermission } from "./permissions.js";
 import {
-  itemEntrySchema,
-  MAX_ITEMS,
-  MAX_SNAPSHOT_BYTES,
   type NativeTurn,
-  readPages,
+  readHistory,
+  readTurns,
   threadSchema,
   threadStatusSchema,
   turnSchema,
 } from "./protocol.js";
 import {
   type AsyncQuestion,
+  AsyncQuestionProjection,
   asyncQuestionReply,
   asyncQuestionSchema,
-  projectAsyncQuestions,
 } from "./questions.js";
 import type { RpcClient, RpcMessage } from "./rpc.js";
 import { projectItem } from "./timeline.js";
@@ -30,6 +28,8 @@ import { projectItem } from "./timeline.js";
 const SNAPSHOT_DELAY_MS = 75;
 const MAX_PENDING_PERMISSIONS = 128;
 const MAX_DIRTY_TURNS = 128;
+const MAX_FINGERPRINT_BYTES = 64 * 1024 * 1024;
+const MAX_PENDING_SNAPSHOT_BYTES = 8 * 1024 * 1024;
 type Snapshot = { item: ProviderTimelineItem; timestamp?: string };
 type PendingPermission = {
   id: string | number;
@@ -40,7 +40,10 @@ type PendingPermission = {
 
 /** One attachment. Native snapshots, not buffered deltas, determine displayed text. */
 export class AttachedThread {
-  readonly snapshots = new Map<string, Snapshot>();
+  private readonly fingerprints = new Map<string, string>();
+  private fingerprintBytes = 0;
+  private readonly pendingSnapshots = new Map<string, Snapshot>();
+  private pendingSnapshotBytes = 0;
   readonly permissions = new Map<string, PendingPermission>();
   private questions = new Map<string, AsyncQuestion>();
   private questionRevision = 0;
@@ -52,7 +55,6 @@ export class AttachedThread {
   private refreshing: Promise<void> | undefined;
   private closed = false;
   private hydrating = false;
-  private snapshotBytes = 0;
   private mutationPending = false;
   private pendingStartEvents: NativeTurn[] | undefined;
   private turnRevision = 0;
@@ -72,13 +74,13 @@ export class AttachedThread {
   async hydrate(rpc: RpcClient): Promise<void> {
     this.hydrating = true;
     try {
-      await this.readNativeSnapshot(rpc);
+      await this.readNativeSnapshot(rpc, true);
     } finally {
       this.hydrating = false;
     }
   }
 
-  private async readNativeSnapshot(rpc: RpcClient): Promise<void> {
+  private async readNativeSnapshot(rpc: RpcClient, publishHistory: boolean): Promise<void> {
     this.rpc = rpc;
     this.activeTurn = undefined;
     this.permissions.clear();
@@ -89,15 +91,15 @@ export class AttachedThread {
     if (response.thread.id !== this.threadId) throw new Error("Codex resumed a different thread");
     if (response.thread.canAcceptDirectInput !== true)
       throw new Error("Codex thread does not accept direct input");
-    const entries = await readPages(
+    const questions = new AsyncQuestionProjection();
+    for await (const entry of readHistory(
       rpc,
-      "thread/items/list",
-      { threadId: this.threadId, sortDirection: "asc" },
-      itemEntrySchema,
-    );
-    this.snapshots.clear();
-    this.snapshotBytes = 0;
-    for (const entry of entries) this.remember(entry.item, entry.startedAtMs);
+      { threadId: this.threadId },
+      () => this.rpc === rpc && !this.closed,
+    )) {
+      questions.add(entry.item);
+      this.publishChangedSnapshot(entry.item, entry.startedAtMs, publishHistory);
+    }
     const revision = this.turnRevision;
     const turns = z.object({ data: z.array(turnSchema) }).parse(
       await rpc.request("thread/turns/list", {
@@ -109,7 +111,7 @@ export class AttachedThread {
     );
     if (this.turnRevision === revision)
       this.activeTurn = turns.data.find((turn) => turn.status === "inProgress");
-    this.synchronizeQuestions(entries.map((entry) => entry.item));
+    this.synchronizeQuestions(questions.pending());
     await this.refresh();
     this.emit({
       type: "session.config",
@@ -127,11 +129,6 @@ export class AttachedThread {
     });
   }
 
-  replay(): void {
-    for (const snapshot of this.snapshots.values())
-      this.emit({ type: "timeline.item", sessionId: this.sessionId, ...snapshot });
-  }
-
   async activate(): Promise<boolean> {
     if (this.closed || !this.rpc)
       throw new Error("Codex attachment is disconnected; retry after reconnection");
@@ -144,7 +141,10 @@ export class AttachedThread {
     await this.refresh();
     this.activated = true;
     if (this.activeTurn) this.emitTurn(this.activeTurn);
-    this.replay();
+    for (const snapshot of this.pendingSnapshots.values())
+      this.emit({ type: "timeline.item", sessionId: this.sessionId, ...snapshot });
+    this.pendingSnapshots.clear();
+    this.pendingSnapshotBytes = 0;
     for (const pending of this.permissions.values())
       this.emit({
         type: "session.permission",
@@ -236,22 +236,14 @@ export class AttachedThread {
           await this.reconcileTurn(rpc, this.publishedTurnId);
           const turnId = this.activeTurn?.id;
           const questionRevision = this.questionRevision;
-          const entries = await readPages(
-            rpc,
-            "thread/items/list",
-            {
-              threadId: this.threadId,
-              sortDirection: "asc",
-            },
-            itemEntrySchema,
-          );
+          const questions = await this.readQuestions(rpc);
           if (this.activeTurn?.id !== turnId)
             throw new Error("The native turn changed; the question answer was not sent");
           if (this.questionRevision !== questionRevision)
             throw new Error(
               "Codex questions changed during admission; retry with the current question",
             );
-          this.synchronizeQuestions(entries.map((entry) => entry.item));
+          this.synchronizeQuestions(questions);
           const question = this.questions.get(input.permissionId);
           if (!question) throw new Error("Question already answered in Codex");
           const text = asyncQuestionReply(question, input.response);
@@ -325,6 +317,8 @@ export class AttachedThread {
         if (input.type === "session.permission") {
           // Resolve only after the native reply appears in the authoritative snapshot.
           this.markDirty(sentTurnId);
+          // An older scan may have captured the turn before this reply was sent.
+          if (this.refreshing) await this.refreshing;
           await this.refresh();
         }
       }
@@ -356,7 +350,7 @@ export class AttachedThread {
     this.activated = false;
     this.hydrating = true;
     try {
-      await this.readNativeSnapshot(rpc);
+      await this.readNativeSnapshot(rpc, wasActive);
       for (const id of oldPermissions)
         if (!this.permissions.has(id) && !this.questions.has(id))
           this.emit({
@@ -386,7 +380,10 @@ export class AttachedThread {
     if (rpc) await rpc.request("thread/unsubscribe", { threadId: this.threadId });
     this.permissions.clear();
     this.questions.clear();
-    this.snapshots.clear();
+    this.fingerprints.clear();
+    this.fingerprintBytes = 0;
+    this.pendingSnapshots.clear();
+    this.pendingSnapshotBytes = 0;
   }
 
   private emitTurn(turn: NativeTurn): void {
@@ -456,39 +453,29 @@ export class AttachedThread {
       try {
         let questionsChanged = false;
         for (const turnId of turns) {
-          const entries = await readPages(
+          for await (const entry of readHistory(
             rpc,
-            "thread/items/list",
-            { threadId: this.threadId, turnId, sortDirection: "asc" },
-            itemEntrySchema,
-          );
-          if (this.rpc !== rpc || this.closed) return;
-          for (const entry of entries) {
-            const snapshot = this.remember(entry.item, entry.startedAtMs);
+            { threadId: this.threadId, turnId },
+            () => this.rpc === rpc && !this.closed,
+          )) {
+            const snapshot = this.publishChangedSnapshot(
+              entry.item,
+              entry.startedAtMs,
+              this.activated,
+            );
             if (
               snapshot &&
               (snapshot.item.type === "user_message" ||
                 asyncQuestionSchema.safeParse(entry.item).success)
             )
               questionsChanged = true;
-            if (snapshot && this.activated)
-              this.emit({ type: "timeline.item", sessionId: this.sessionId, ...snapshot });
           }
         }
         if (questionsChanged) {
           const questionRevision = this.questionRevision;
-          const entries = await readPages(
-            rpc,
-            "thread/items/list",
-            {
-              threadId: this.threadId,
-              sortDirection: "asc",
-            },
-            itemEntrySchema,
-          );
+          const questions = await this.readQuestions(rpc);
           if (this.rpc !== rpc || this.closed) return;
-          if (this.questionRevision === questionRevision)
-            this.synchronizeQuestions(entries.map((entry) => entry.item));
+          if (this.questionRevision === questionRevision) this.synchronizeQuestions(questions);
         }
       } catch (error) {
         // Snapshot failure requires rehydration. A per-thread state-read error
@@ -537,13 +524,15 @@ export class AttachedThread {
     const latest = data[0];
     let previous = latest?.id === previousTurnId ? latest : undefined;
     if (previousTurnId && !previous) {
-      const turns = await readPages(
+      for await (const turn of readTurns(
         rpc,
-        "thread/turns/list",
-        { threadId: this.threadId, sortDirection: "desc", itemsView: "notLoaded" },
-        turnSchema,
-      );
-      previous = turns.find((turn) => turn.id === previousTurnId);
+        this.threadId,
+        () => this.rpc === rpc && !this.closed,
+      )) {
+        if (turn.id !== previousTurnId) continue;
+        previous = turn;
+        break;
+      }
     }
     if (this.rpc !== rpc || this.closed) return;
     const completed = previous?.status === "inProgress" ? undefined : previous;
@@ -568,8 +557,18 @@ export class AttachedThread {
     return completed;
   }
 
-  private synchronizeQuestions(items: unknown[]): void {
-    const pending = projectAsyncQuestions(items);
+  private async readQuestions(rpc: RpcClient): Promise<Map<string, AsyncQuestion>> {
+    const questions = new AsyncQuestionProjection();
+    for await (const entry of readHistory(
+      rpc,
+      { threadId: this.threadId },
+      () => this.rpc === rpc && !this.closed,
+    ))
+      questions.add(entry.item);
+    return questions.pending();
+  }
+
+  private synchronizeQuestions(pending: Map<string, AsyncQuestion>): void {
     if (pending.size + this.permissions.size > MAX_PENDING_PERMISSIONS)
       throw new Error("Codex pending permission limit exceeded");
     // Even an unchanged result supersedes older in-flight history reads.
@@ -618,22 +617,42 @@ export class AttachedThread {
     return expectedTurnId;
   }
 
-  private remember(item: unknown, startedAtMs: number | null): Snapshot | undefined {
+  private publishChangedSnapshot(
+    item: unknown,
+    startedAtMs: number | null,
+    publishImmediately: boolean,
+  ): Snapshot | undefined {
     const projected = projectItem(item);
     const snapshot: Snapshot = {
       item: projected,
       ...(startedAtMs === null ? {} : { timestamp: new Date(startedAtMs).toISOString() }),
     };
-    const previous = this.snapshots.get(projected.id);
     const encoded = JSON.stringify(snapshot);
-    const previousEncoded = previous ? JSON.stringify(previous) : "";
-    if (encoded === previousEncoded) return undefined;
-    const size =
-      this.snapshotBytes - Buffer.byteLength(previousEncoded) + Buffer.byteLength(encoded);
-    if (size > MAX_SNAPSHOT_BYTES || (!previous && this.snapshots.size >= MAX_ITEMS))
-      throw new Error("Codex snapshot limit exceeded; attachment stopped");
-    this.snapshots.set(projected.id, snapshot);
-    this.snapshotBytes = size;
+    const fingerprint = createHash("sha256").update(encoded).digest("hex");
+    const previous = this.fingerprints.get(projected.id);
+    if (fingerprint === previous) return undefined;
+    const fingerprintBytes =
+      this.fingerprintBytes +
+      (previous === undefined ? Buffer.byteLength(projected.id) + fingerprint.length : 0);
+    if (fingerprintBytes > MAX_FINGERPRINT_BYTES)
+      throw new Error("Codex snapshot fingerprint metadata exceeded 64 MiB");
+    if (publishImmediately) {
+      this.emit({ type: "timeline.item", sessionId: this.sessionId, ...snapshot });
+    } else {
+      // Only the manager-registration gap needs payload retention, not session history.
+      const queued = this.pendingSnapshots.get(projected.id);
+      const size =
+        this.pendingSnapshotBytes -
+        (queued ? Buffer.byteLength(JSON.stringify(queued)) : 0) +
+        Buffer.byteLength(encoded);
+      if (size > MAX_PENDING_SNAPSHOT_BYTES)
+        throw new Error("Codex activation update buffer exceeded 8 MiB; attachment stopped");
+      this.pendingSnapshots.set(projected.id, snapshot);
+      this.pendingSnapshotBytes = size;
+    }
+    // A failed publication must remain eligible for authoritative recovery.
+    this.fingerprints.set(projected.id, fingerprint);
+    this.fingerprintBytes = fingerprintBytes;
     return snapshot;
   }
 }

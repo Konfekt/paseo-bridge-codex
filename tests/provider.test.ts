@@ -118,6 +118,85 @@ const open: Extract<ProviderInput, { type: "session.open" }> = {
 };
 
 describe("shared-thread provider", () => {
+  it("streams full historical payloads larger than its former snapshot budget and keeps live updates", async () => {
+    const daemon = new NativeDaemon();
+    const itemCount = 110;
+    const payloadSizeBytes = 650 * 1024;
+    const textFor = (index: number, changed = false) =>
+      `${index}:${"x".repeat(payloadSizeBytes)}:${changed ? "changed" : "original"}`;
+    const original = daemon.request.bind(daemon);
+    let lastChanged = false;
+    daemon.request = async (method, params) => {
+      if (method !== "thread/items/list") return original(method, params);
+      const { cursor, limit, turnId } = params as {
+        cursor?: string;
+        limit?: number;
+        turnId?: string;
+      };
+      const indexes =
+        turnId === "native-turn"
+          ? [itemCount - 1]
+          : Array.from({ length: itemCount }, (_, index) => index);
+      const offset = Number(cursor ?? 0);
+      const page = indexes.slice(offset, offset + Math.min(limit ?? 100, 10));
+      return {
+        data: page.map((index) => ({
+          turnId: index === itemCount - 1 ? "native-turn" : "older-turn",
+          item: {
+            id: `large-message-${index}`,
+            type: "agentMessage",
+            text: textFor(index, lastChanged && index === itemCount - 1),
+          },
+          startedAtMs: 1234,
+          completedAtMs: null,
+        })),
+        nextCursor: offset + page.length < indexes.length ? String(offset + page.length) : null,
+      };
+    };
+    const bridge = createBridgeProvider(
+      async () => "native-turn",
+      async () => daemon,
+    );
+    const connection = await bridge.registration.connect({
+      versions: [1],
+      capabilities: [...CAPABILITIES],
+      launch,
+    });
+    let firstSeen = false;
+    let lastSeen = false;
+    let liveSeen = false;
+    let openFailure: string | undefined;
+    connection.onEvent((event) => {
+      if (event.type === "request.failed") openFailure = event.error.message;
+      if (event.type !== "timeline.item" || event.item.type !== "assistant_message") return;
+      if (event.item.id === "large-message-0") {
+        expect(event.item.text).toBe(textFor(0));
+        firstSeen = true;
+      }
+      if (event.item.id === `large-message-${itemCount - 1}`) {
+        expect(event.item.text).toBe(textFor(itemCount - 1, lastChanged));
+        if (lastChanged) liveSeen = true;
+        else lastSeen = true;
+      }
+    });
+    try {
+      await connection.send(open);
+      expect(openFailure).toBeUndefined();
+      await bridge.activate("agent-1");
+      expect(firstSeen).toBe(true);
+      expect(lastSeen).toBe(true);
+      lastChanged = true;
+      daemon.emit("item/completed", {
+        threadId,
+        turnId: "native-turn",
+        itemId: `large-message-${itemCount - 1}`,
+      });
+      await vi.waitFor(() => expect(liveSeen).toBe(true));
+    } finally {
+      await connection.close();
+    }
+  });
+
   it("does not answer an async question in a newer turn admitted during the host lookup", async () => {
     const daemon = new NativeDaemon();
     daemon.item = {
@@ -362,6 +441,138 @@ describe("shared-thread provider", () => {
         }),
       );
       expect(events.some((event) => event.type === "session.closed")).toBe(false);
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("settles a previous turn without loading unrelated older turn history", async () => {
+    const daemon = new NativeDaemon();
+    const original = daemon.request.bind(daemon);
+    let advanced = false;
+    daemon.request = async (method, params) => {
+      if (method !== "thread/turns/list" || !advanced) return original(method, params);
+      const { cursor, limit } = params as { cursor?: string; limit: number };
+      const offset = Number(cursor ?? 0);
+      const turnCount = 10_002;
+      const pageEnd = Math.min(offset + limit, turnCount);
+      return {
+        data: Array.from({ length: pageEnd - offset }, (_, index) => {
+          const position = offset + index;
+          return {
+            id: position === 0 ? "later-turn" : position === 1 ? "native-turn" : `old-${position}`,
+            status: position === 0 ? "inProgress" : "completed",
+            error: null,
+          };
+        }),
+        nextCursor: pageEnd < turnCount ? String(pageEnd) : null,
+      };
+    };
+    const bridge = createBridgeProvider(
+      async () => daemon.activeTurn,
+      async () => daemon,
+    );
+    const connection = await bridge.registration.connect({
+      versions: [1],
+      capabilities: [...CAPABILITIES],
+      launch,
+    });
+    const events: ProviderEvent[] = [];
+    connection.onEvent((event) => events.push(event));
+    try {
+      await connection.send(open);
+      await bridge.activate("agent-1");
+      events.length = 0;
+      advanced = true;
+      daemon.activeTurn = "later-turn";
+      await expect(bridge.activate("agent-1")).resolves.toBe(false);
+      expect(events.filter((event) => event.type === "session.turn")).toEqual([
+        {
+          type: "session.turn",
+          sessionId: open.sessionId,
+          turnId: "native-turn",
+          state: "completed",
+        },
+        {
+          type: "session.turn",
+          sessionId: open.sessionId,
+          turnId: "later-turn",
+          state: "started",
+        },
+      ]);
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("recovers every queued update after activation buffer exhaustion", async () => {
+    const first = new NativeDaemon();
+    const recovered = new NativeDaemon();
+    const payloadSizeBytes = 5 * 1024 * 1024;
+    const installHistory = (daemon: NativeDaemon, afterRecovery: boolean) => {
+      const original = daemon.request.bind(daemon);
+      daemon.request = async (method, params) => {
+        if (method !== "thread/items/list") return original(method, params);
+        const index = Number((params as { cursor?: string }).cursor ?? 0);
+        return {
+          data: [
+            {
+              turnId: "native-turn",
+              item: {
+                id: index === 0 ? "pending-a" : "pending-b",
+                type: "agentMessage",
+                text:
+                  index === 0 && afterRecovery
+                    ? "Latest A after recovery"
+                    : (index === 0 ? "A" : "B").repeat(payloadSizeBytes),
+              },
+              startedAtMs: 1234,
+              completedAtMs: null,
+            },
+          ],
+          nextCursor: index === 0 ? "1" : null,
+        };
+      };
+    };
+    installHistory(recovered, true);
+    let connectionCount = 0;
+    const bridge = createBridgeProvider(
+      async () => "native-turn",
+      async () => (connectionCount++ === 0 ? first : recovered),
+    );
+    const connection = await bridge.registration.connect({
+      versions: [1],
+      capabilities: [...CAPABILITIES],
+      launch,
+    });
+    let bufferExhausted = false;
+    let restored = false;
+    let latestASeen = false;
+    let fullBSeen = false;
+    connection.onEvent((event) => {
+      if (event.type === "session.notice") {
+        bufferExhausted ||=
+          event.notice.description?.includes("activation update buffer exceeded") === true;
+        restored ||= event.notice.description === "Codex connection restored.";
+      }
+      if (event.type !== "timeline.item" || event.item.type !== "assistant_message") return;
+      if (event.item.id === "pending-a" && event.item.text === "Latest A after recovery")
+        latestASeen = true;
+      if (event.item.id === "pending-b") {
+        expect(event.item.text).toBe("B".repeat(payloadSizeBytes));
+        fullBSeen = true;
+      }
+    });
+    try {
+      await connection.send(open);
+      // Updates arrive after opening but before the manager's activation handoff.
+      installHistory(first, false);
+      first.emit("item/completed", { threadId, turnId: "native-turn", itemId: "pending-a" });
+      await vi.waitFor(() => expect(bufferExhausted).toBe(true));
+      await vi.waitFor(() => expect(restored).toBe(true), { timeout: 5000 });
+      await bridge.activate("agent-1");
+      expect(latestASeen).toBe(true);
+      expect(fullBSeen).toBe(true);
     } finally {
       await connection.close();
     }

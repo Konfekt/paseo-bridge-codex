@@ -39,7 +39,47 @@ test("plugin lifecycle discovers, restores and steers terminal threads without a
   };
   const threads = [thread];
   let latestTurnId = "native-turn";
+  const historicalRecordMarker = "Unique native historical record";
   const items: Array<{ turnId: string; item: Record<string, unknown> }> = [
+    {
+      turnId: "history-turn",
+      item: {
+        id: "historical-question",
+        type: "agentMessage",
+        delivery: "async",
+        text: "An answered question from the oldest history page",
+        questions: [{ title: "An answered question from the oldest history page" }],
+      },
+    },
+    {
+      turnId: "history-turn",
+      item: { id: "historical-record", type: "nativeRecord", text: historicalRecordMarker },
+    },
+    ...Array.from({ length: 20_101 }, (_, index) => ({
+      turnId: "history-turn",
+      item: {
+        id: `historical-message-${index}`,
+        type: "agentMessage",
+        text: `Historical terminal output ${index}`,
+      },
+    })),
+    {
+      turnId: "history-turn",
+      item: {
+        id: "historical-reply",
+        type: "userMessage",
+        content: [
+          {
+            type: "text",
+            text: `<send_user_message_question_reply>\n${JSON.stringify({
+              answer: "Already answered",
+              question: "An answered question from the oldest history page",
+              questionItemId: '["request_user_input_async","historical-question",0]',
+            })}\n</send_user_message_question_reply>`,
+          },
+        ],
+      },
+    },
     {
       turnId: latestTurnId,
       item: { id: "native-message", type: "agentMessage", text: "Existing terminal output" },
@@ -86,18 +126,26 @@ test("plugin lifecycle discovers, restores and steers terminal threads without a
         case "thread/resume":
           result = { thread: requestedThread };
           break;
-        case "thread/items/list":
+        case "thread/items/list": {
+          const history = items.filter(
+            (entry) =>
+              (requestedThread.id === thread.id || entry.turnId !== "history-turn") &&
+              (!params["turnId"] || params["turnId"] === entry.turnId),
+          );
+          if (params["sortDirection"] === "desc") history.reverse();
+          const offset = Number(params["cursor"] ?? 0);
+          const limit = Number(params["limit"] ?? 100);
+          const page = history.slice(offset, offset + limit);
           result = {
-            data: items
-              .filter((entry) => !params["turnId"] || params["turnId"] === entry.turnId)
-              .map((entry) => ({
-                ...entry,
-                startedAtMs: 1_700_000_000_000,
-                completedAtMs: null,
-              })),
-            nextCursor: null,
+            data: page.map((entry) => ({
+              ...entry,
+              startedAtMs: 1_700_000_000_000,
+              completedAtMs: null,
+            })),
+            nextCursor: offset + page.length < history.length ? String(offset + page.length) : null,
           };
           break;
+        }
         case "thread/turns/list":
           result = {
             data: [
@@ -250,9 +298,51 @@ test("plugin lifecycle discovers, restores and steers terminal threads without a
     expect(JSON.stringify(await client.fetchAgentTimeline(agentId))).toContain(
       "Existing terminal output",
     );
+    for (const query of ["Historical terminal output 0", "Historical terminal output 20100"])
+      expect(
+        (await client.searchAgentTimeline({ agentId, query })).locations.length,
+      ).toBeGreaterThan(0);
     expect(await client.invokePluginRpc("paseo-bridge-codex", "activate", { agentId })).toEqual({
       activated: false,
     });
+    publishItem({
+      id: "live-message",
+      type: "agentMessage",
+      text: "Live terminal output after import",
+    });
+    await expect
+      .poll(async () => JSON.stringify(await connectedClient.fetchAgentTimeline(agentId)))
+      .toContain("Live terminal output after import");
+    // A long history must retain enough identity to avoid duplicating an unchanged record.
+    for (const socket of native.clients)
+      socket.send(
+        JSON.stringify({
+          method: "item/completed",
+          params: { threadId: thread.id, turnId: "history-turn", itemId: "historical-record" },
+        }),
+      );
+    await expect
+      .poll(() =>
+        requests.some(
+          (request) =>
+            request.method === "thread/items/list" && request.params["turnId"] === "history-turn",
+        ),
+      )
+      .toBe(true);
+    await client.invokePluginRpc("paseo-bridge-codex", "activate", { agentId });
+    const tail = await client.fetchAgentTimeline(agentId, { limit: 10, mergeWindow: false });
+    const head = await client.fetchAgentTimeline(agentId, {
+      direction: "after",
+      cursor: { epoch: tail.epoch, seq: 0 },
+      limit: 10,
+      mergeWindow: false,
+    });
+    const recordLocations = new Set(
+      [...head.entries, ...tail.entries]
+        .filter((entry) => JSON.stringify(entry.item).includes(historicalRecordMarker))
+        .map((entry) => entry.seqStart),
+    );
+    expect(recordLocations.size).toBe(1);
     await client.sendMessage(agentId, "Keep the current approach", { activeTurnBehavior: "steer" });
     await expect
       .poll(() => requests.find((request) => request.method === "turn/steer"))
@@ -318,7 +408,7 @@ test("plugin lifecycle discovers, restores and steers terminal threads without a
       .find(
         (item) =>
           item["type"] === "userMessage" &&
-          JSON.stringify(item["content"]).includes("<send_user_message_question_reply>"),
+          JSON.stringify(item["content"]).includes("Choose the next step"),
       );
     expect(answer?.["content"]).toEqual([
       {
@@ -381,6 +471,10 @@ test("plugin lifecycle discovers, restores and steers terminal threads without a
       limit: 10,
     });
     expect(JSON.stringify(restoredTimeline)).toContain("Existing terminal output");
+    for (const query of ["Historical terminal output 0", "Historical terminal output 20100"])
+      expect(
+        (await client.searchAgentTimeline({ agentId, query })).locations.length,
+      ).toBeGreaterThan(0);
     expect(await client.invokePluginRpc("paseo-bridge-codex", "activate", { agentId })).toEqual({
       activated: false,
     });
@@ -520,4 +614,4 @@ test("plugin lifecycle discovers, restores and steers terminal threads without a
       http.close((error) => (error ? reject(error) : done())),
     );
   }
-}, 60_000);
+}, 120_000);

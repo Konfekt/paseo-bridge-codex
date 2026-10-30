@@ -272,7 +272,6 @@ function connection(
       });
       try {
         await thread.hydrate(client);
-        thread.replay();
         emit({ type: "session.ready", requestId: input.requestId, sessionId: input.sessionId });
       } catch (error) {
         sessions.delete(input.sessionId);
