@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type {
   ProviderPermissionRequest,
   ProviderPermissionResponse,
@@ -8,6 +9,33 @@ const replyOpen = "<send_user_message_question_reply>";
 const replyClose = "</send_user_message_question_reply>";
 const asyncQuestionName = "request_user_input_async";
 const MAX_QUESTION_SCAN_BYTES = 8 * 1024 * 1024;
+const MAX_HIDDEN_QUESTION_BYTES = 8 * 1024 * 1024;
+const HIDDEN_QUESTION_LABEL_PREFIX = "bridge.codex.hidden-question.";
+
+export interface QuestionVisibility {
+  /** Persisted label keys, not native question IDs. */
+  read(agentId: string): Promise<ReadonlySet<string>>;
+  hide(agentId: string, questionId: string): Promise<void>;
+}
+
+export function hiddenQuestionLabel(questionId: string): string {
+  return HIDDEN_QUESTION_LABEL_PREFIX + createHash("sha256").update(questionId).digest("hex");
+}
+
+export function readHiddenQuestionLabels(labels: Record<string, string>): ReadonlySet<string> {
+  const hidden = new Set<string>();
+  let sizeBytes = 0;
+  for (const [key, value] of Object.entries(labels)) {
+    if (!key.startsWith(HIDDEN_QUESTION_LABEL_PREFIX)) continue;
+    if (!/^[a-f0-9]{64}$/.test(key.slice(HIDDEN_QUESTION_LABEL_PREFIX.length)) || value !== "true")
+      throw new Error("Invalid Codex hidden-question preference in Paseo agent labels");
+    sizeBytes += Buffer.byteLength(key);
+    if (sizeBytes > MAX_HIDDEN_QUESTION_BYTES)
+      throw new Error("Codex hidden-question preferences exceeded 8 MiB");
+    hidden.add(key);
+  }
+  return hidden;
+}
 export const asyncQuestionSchema = z.object({
   type: z.literal("agentMessage"),
   delivery: z.literal("async"),
@@ -123,6 +151,7 @@ export class AsyncQuestionProjection {
               options: (question.options ?? []).map((label) => ({ label })),
               multiSelect: false,
               allowOther: true,
+              dismissLabel: "Hide",
             })),
           },
         },
@@ -134,12 +163,8 @@ export class AsyncQuestionProjection {
 
 export function asyncQuestionReply(
   question: AsyncQuestion,
-  response: ProviderPermissionResponse,
+  response: Extract<ProviderPermissionResponse, { behavior: "allow" }>,
 ): string {
-  if (response.behavior === "deny")
-    throw new Error(
-      "Codex has no shared async-question dismissal; submit an answer to resolve the question",
-    );
   const { answers } = z
     .object({ answers: z.record(z.string(), z.string()) })
     .parse(response.updatedInput);

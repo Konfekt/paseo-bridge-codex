@@ -94,6 +94,14 @@ The incremental-history cleanup pass was a no-op: item and turn scans already sh
 
 **Diagram:** `dot -Tdot docs/architecture.dot -o /dev/null` and Graphviz SVG generation completed without diagnostics. The render pipeline adds `role="img" aria-label="Plugin-owned discovery and shared Codex execution"` to the SVG root. The plugin-process group contains the provider and discovery loop. `rsvg-convert -w 1800 docs/architecture.svg -o /tmp/pbc-lifecycle-architecture.png` rendered the saved SVG for visual inspection: no clipped nodes, overlapping labels, or edges through unrelated nodes. SVG point-coordinate DPI is explicit in the DOT source; the installed Graphviz renderer clipped the higher-DPI output.
 
+## Hide stale async questions — 2026-10-30
+
+The released-host scenario sends Android's dismissal response (`behavior: "deny"`, `message: "Dismissed by user"`) to an async question. Before implementation it failed with `Codex has no shared async-question dismissal`. The scenario now requires per-question **Hide** metadata, removal of the pending card, unchanged native history and turn-mutation counts, preservation of unrelated labels, and no reopening after Paseo restart or plugin reload. The extracted-package scenario reuses this owner. Native approvals retain their original response path.
+
+Provider regressions require a failed preference save to leave the card pending, an older native scan not to reopen a saved Hide, a stale reconnect preference read not to overwrite a concurrent save, and initial hydration to exclude 129 saved hidden questions before enforcing visible permission capacity. The reconnect race first reproduced a reopened card; the pre-fix capacity reproduction failed before the preference reader ran.
+
+The cleanup pass removed an unused prefix export and avoided resending unrelated labels in the test fixture. No duplicate-outcome or implementation-only tests were found to prune. Phone interaction remains outside the automated evidence.
+
 ## Remaining acceptance boundaries
 
 Interactive Codex TUI plus Paseo phone/browser acceptance and macOS/Windows operation are unverified. The package uses a Unix control socket. No claim extends to embedded `--no-daemon` sessions, other users' homes, arbitrary remote app servers, or unsupported versions.

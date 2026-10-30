@@ -429,6 +429,49 @@ test("plugin lifecycle discovers, restores and steers terminal threads without a
       },
     ]);
     expect(daemon.agentManager.getAgent(agentId)?.pendingPermissions.size).toBe(0);
+    const labelsBeforeHide = (await client.fetchAgents()).entries.find(
+      (entry) => entry.agent.id === agentId,
+    )?.agent.labels;
+    await client.updateAgent(agentId, {
+      labels: { "contract.unrelated": "preserve" },
+    });
+    publishItem({
+      type: "agentMessage",
+      id: "hidden-question",
+      delivery: "async",
+      text: "A stale question hidden only in Paseo",
+      questions: [{ title: "A stale question hidden only in Paseo", options: ["Continue"] }],
+    });
+    await expect
+      .poll(() => daemon.agentManager.getAgent(agentId)?.pendingPermissions.has("hidden-question"))
+      .toBe(true);
+    const questionBeforeHide = (
+      await client.fetchAgentTimeline(agentId)
+    ).agent?.pendingPermissions.find((permission) => permission.id === "hidden-question");
+    const nativeHistoryBeforeHide = JSON.stringify(items);
+    const mutationCountBeforeHide = requests.filter((request) =>
+      ["turn/start", "turn/steer", "turn/interrupt"].includes(request.method),
+    ).length;
+    await client.respondToPermissionAndWait(agentId, "hidden-question", {
+      behavior: "deny",
+      message: "Dismissed by user",
+    });
+    expect(questionBeforeHide?.input?.["questions"]).toEqual([
+      expect.objectContaining({ dismissLabel: "Hide" }),
+    ]);
+    expect(daemon.agentManager.getAgent(agentId)?.pendingPermissions.has("hidden-question")).toBe(
+      false,
+    );
+    expect(JSON.stringify(items)).toBe(nativeHistoryBeforeHide);
+    expect(
+      requests.filter((request) =>
+        ["turn/start", "turn/steer", "turn/interrupt"].includes(request.method),
+      ),
+    ).toHaveLength(mutationCountBeforeHide);
+    expect(
+      (await client.fetchAgents()).entries.find((entry) => entry.agent.id === agentId)?.agent
+        .labels,
+    ).toMatchObject({ ...labelsBeforeHide, "contract.unrelated": "preserve" });
     threads.push({ ...thread, id: "later-terminal-thread" });
     await expect
       .poll(async () => (await connectedClient.fetchAgents()).entries.length, { timeout: 15_000 })
@@ -466,6 +509,10 @@ test("plugin lifecycle discovers, restores and steers terminal threads without a
       .toBe("native-turn");
     const agents = await client.fetchAgents();
     expect(agents.entries.map((entry) => entry.agent.id).sort()).toEqual(agentIds);
+    expect(agents.entries.find((entry) => entry.agent.id === agentId)?.agent.labels).toMatchObject({
+      ...labelsBeforeHide,
+      "contract.unrelated": "preserve",
+    });
     const restoredTimeline = await client.fetchAgentTimeline(agentId, {
       direction: "tail",
       limit: 10,
@@ -515,6 +562,9 @@ test("plugin lifecycle discovers, restores and steers terminal threads without a
       .toBe(3);
     expect((await client.fetchAgents()).entries.map((entry) => entry.agent.id).sort()).toEqual(
       enabledIds,
+    );
+    expect(daemon.agentManager.getAgent(agentId)?.pendingPermissions.has("hidden-question")).toBe(
+      false,
     );
     const completedTurns: string[] = [];
     const stopObserving = daemon.agentManager.subscribe(

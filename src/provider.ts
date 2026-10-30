@@ -11,6 +11,7 @@ import {
 } from "@getpaseo/plugin/server/provider";
 import { z } from "zod";
 import { CODEX_VERSION, codexHome, readPages, readPointer, threadSchema } from "./protocol.js";
+import type { QuestionVisibility } from "./questions.js";
 import { connectRpc, type RpcClient } from "./rpc.js";
 import { AttachedThread } from "./thread.js";
 
@@ -30,6 +31,7 @@ const MAX_ATTACHMENTS = 128;
 
 export function createBridgeProvider(
   readHostTurn: (agentId: string) => Promise<string | null>,
+  questionVisibility: QuestionVisibility,
   factory: typeof connectRpc = connectRpc,
 ): {
   registration: ProviderRegistration;
@@ -67,7 +69,14 @@ export function createBridgeProvider(
         if (!request.versions.includes(1)) throw new Error("Paseo provider protocol 1 is required");
         if (!request.launch) throw new Error("Resolved Codex launch configuration is required");
         const capabilities = negotiateProviderCapabilities(request.capabilities, CAPABILITIES);
-        return connection(request.launch, capabilities, factory, attachments, readHostTurn);
+        return connection(
+          request.launch,
+          capabilities,
+          factory,
+          attachments,
+          readHostTurn,
+          questionVisibility,
+        );
       },
     },
     async activate(agentId) {
@@ -87,6 +96,7 @@ function connection(
   factory: typeof connectRpc,
   attachments: Map<string, AttachedThread>,
   readHostTurn: (agentId: string) => Promise<string | null>,
+  questionVisibility: QuestionVisibility,
 ): ProviderConnection {
   const home = codexHome(launch);
   const sessions = new Map<string, AttachedThread>();
@@ -258,6 +268,7 @@ function connection(
         pointer,
         emit,
         readHostTurn,
+        questionVisibility,
       );
       sessions.set(input.sessionId, thread);
       attachments.set(agentId, thread);

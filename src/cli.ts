@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { pathToFileURL } from "node:url";
 import { discoverOnce } from "./discovery.js";
-import { connectDiscoveryClient } from "./paseo-client.js";
+import { connectPaseoHost } from "./paseo-client.js";
 
 const HELP = `Usage: paseo-bridge-codex [once] [--paseo-home PATH]
 
@@ -35,7 +35,7 @@ export async function main(args: string[]): Promise<void> {
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);
   try {
-    const connection = await connectDiscoveryClient(home, controller.signal);
+    const connection = await connectPaseoHost(home, controller.signal);
     try {
       await discoverOnce(connection.discovery, controller.signal);
     } finally {

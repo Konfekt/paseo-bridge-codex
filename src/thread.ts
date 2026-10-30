@@ -21,6 +21,8 @@ import {
   AsyncQuestionProjection,
   asyncQuestionReply,
   asyncQuestionSchema,
+  hiddenQuestionLabel,
+  type QuestionVisibility,
 } from "./questions.js";
 import type { RpcClient, RpcMessage } from "./rpc.js";
 import { projectItem } from "./timeline.js";
@@ -46,6 +48,7 @@ export class AttachedThread {
   private pendingSnapshotBytes = 0;
   readonly permissions = new Map<string, PendingPermission>();
   private questions = new Map<string, AsyncQuestion>();
+  private hiddenQuestionKeys: ReadonlySet<string> | undefined;
   private questionRevision = 0;
   activated = false;
   activeTurn: NativeTurn | undefined;
@@ -69,6 +72,7 @@ export class AttachedThread {
     readonly persistence: ProviderPersistence,
     private readonly emit: (event: ProviderEvent) => void,
     private readonly readHostTurn: (agentId: string) => Promise<string | null>,
+    private readonly questionVisibility: QuestionVisibility,
   ) {}
 
   async hydrate(rpc: RpcClient): Promise<void> {
@@ -133,12 +137,24 @@ export class AttachedThread {
     if (this.closed || !this.rpc)
       throw new Error("Codex attachment is disconnected; retry after reconnection");
     if (this.hydrating) throw new Error("Codex attachment is synchronizing; retry after recovery");
+    if (!this.activated) {
+      const rpc = this.rpc;
+      const hidden = await this.questionVisibility.read(this.agentId);
+      if (this.closed || this.rpc !== rpc || this.hydrating)
+        throw new Error("Codex attachment changed during activation; retry after recovery");
+      if (!this.activated) {
+        // A Hide save can finish while reconnect is reading older preferences.
+        this.hiddenQuestionKeys = new Set([...(this.hiddenQuestionKeys ?? []), ...hidden]);
+        this.synchronizeQuestions(this.questions);
+      }
+    }
     if (this.activated) {
       this.turnStateDirty = true;
       await this.refresh();
       return false;
     }
     await this.refresh();
+    if (this.activated) return false;
     this.activated = true;
     if (this.activeTurn) this.emitTurn(this.activeTurn);
     for (const snapshot of this.pendingSnapshots.values())
@@ -232,6 +248,15 @@ export class AttachedThread {
           await rpc.respond(pending.id, result);
           // Only serverRequest/resolved closes the request: another client may win the race.
         } else if (this.questions.has(input.permissionId)) {
+          if (input.response.behavior === "deny") {
+            await this.questionVisibility.hide(this.agentId, input.permissionId);
+            this.hiddenQuestionKeys = new Set([
+              ...(this.hiddenQuestionKeys ?? []),
+              hiddenQuestionLabel(input.permissionId),
+            ]);
+            this.synchronizeQuestions(this.questions);
+            return;
+          }
           // Re-read native state before admitting an answer that another client may have sent.
           await this.reconcileTurn(rpc, this.publishedTurnId);
           const turnId = this.activeTurn?.id;
@@ -569,7 +594,11 @@ export class AttachedThread {
   }
 
   private synchronizeQuestions(pending: Map<string, AsyncQuestion>): void {
-    if (pending.size + this.permissions.size > MAX_PENDING_PERMISSIONS)
+    pending = new Map(
+      [...pending].filter(([id]) => !this.hiddenQuestionKeys?.has(hiddenQuestionLabel(id))),
+    );
+    // Hydration precedes the manager registration needed to read saved preferences.
+    if (this.hiddenQuestionKeys && pending.size + this.permissions.size > MAX_PENDING_PERMISSIONS)
       throw new Error("Codex pending permission limit exceeded");
     // Even an unchanged result supersedes older in-flight history reads.
     this.questionRevision++;

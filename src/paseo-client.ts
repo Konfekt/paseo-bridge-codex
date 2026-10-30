@@ -15,10 +15,11 @@ const MAX_DIRECTORY_PAGES = 100;
 const MAX_DISCOVERED_SESSIONS = 200;
 const CONNECTION_TIMEOUT_MS = 10_000;
 
-export async function connectDiscoveryClient(
+export async function connectPaseoHost(
   home?: string,
   signal?: AbortSignal,
 ): Promise<{
+  client: ReturnType<typeof createHostClient>;
   discovery: DiscoveryClient;
   close(): Promise<void>;
 }> {
@@ -49,6 +50,7 @@ export async function connectDiscoveryClient(
     await client.connect();
     signal?.throwIfAborted();
     return {
+      client,
       close,
       discovery: {
         async sessions() {

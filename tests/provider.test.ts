@@ -5,10 +5,17 @@ import type {
 } from "@getpaseo/plugin/server/provider";
 import { describe, expect, it, vi } from "vitest";
 import { AGENT_ID_ENV, CAPABILITIES, createBridgeProvider } from "../src/provider.js";
+import { hiddenQuestionLabel, type QuestionVisibility } from "../src/questions.js";
 import type { RpcClient, RpcMessage } from "../src/rpc.js";
 
 const threadId = "019a0000-0000-7000-8000-000000000001";
 const codexHome = "/tmp/bridge-test-home";
+const visibleQuestions: QuestionVisibility = {
+  read: async () => new Set<string>(),
+  hide: async () => {
+    throw new Error("Unexpected question Hide");
+  },
+};
 const launch: ProviderLaunch = {
   command: "codex",
   args: [],
@@ -155,6 +162,7 @@ describe("shared-thread provider", () => {
     };
     const bridge = createBridgeProvider(
       async () => "native-turn",
+      visibleQuestions,
       async () => daemon,
     );
     const connection = await bridge.registration.connect({
@@ -218,7 +226,7 @@ describe("shared-thread provider", () => {
       });
       return "newer-turn";
     };
-    const bridge = createBridgeProvider(readHostTurn, async () => daemon);
+    const bridge = createBridgeProvider(readHostTurn, visibleQuestions, async () => daemon);
     const connection = await bridge.registration.connect({
       versions: [1],
       capabilities: [...CAPABILITIES],
@@ -291,6 +299,7 @@ describe("shared-thread provider", () => {
     };
     const bridge = createBridgeProvider(
       async () => "native-turn",
+      visibleQuestions,
       async () => daemon,
     );
     const connection = await bridge.registration.connect({
@@ -335,9 +344,9 @@ describe("shared-thread provider", () => {
           type: "session.permission",
           sessionId: open.sessionId,
           permissionId: "async-question",
-          response: { behavior: "deny" },
+          response: { behavior: "allow", updatedInput: { answers: {} } },
         }),
-      ).rejects.toThrow("Codex has no shared async-question dismissal");
+      ).rejects.toThrow("Answer Question 2 before submitting");
       const eventCountAfterFreshRead = events.length;
       // Activation is the public refresh barrier: it cannot finish before the older read.
       const refreshed = bridge.activate("agent-1");
@@ -374,6 +383,222 @@ describe("shared-thread provider", () => {
     }
   });
 
+  it("keeps a question on failed Hide and excludes it from an older scan after a saved Hide", async () => {
+    const daemon = new NativeDaemon();
+    const question = {
+      id: "stale-question",
+      type: "agentMessage",
+      delivery: "async",
+      text: "Handled elsewhere",
+      questions: [{ title: "Continue?", options: ["Yes"] }],
+    };
+    const original = daemon.request.bind(daemon);
+    let holdQuestionScan = false;
+    let releaseScan: (() => void) | undefined;
+    daemon.request = async (method, params) => {
+      if (method !== "thread/items/list") return original(method, params);
+      const result = {
+        data: [
+          { turnId: "native-turn", item: { ...question }, startedAtMs: 1234, completedAtMs: null },
+        ],
+        nextCursor: null,
+      };
+      if (holdQuestionScan && !(params as { turnId?: string }).turnId) {
+        holdQuestionScan = false;
+        return new Promise((resolve) => {
+          releaseScan = () => resolve(result);
+        });
+      }
+      return result;
+    };
+    const hide = vi
+      .fn<QuestionVisibility["hide"]>()
+      .mockRejectedValueOnce(new Error("Preference save failed"))
+      .mockResolvedValue(undefined);
+    const bridge = createBridgeProvider(
+      async () => "native-turn",
+      { ...visibleQuestions, hide },
+      async () => daemon,
+    );
+    const connection = await bridge.registration.connect({
+      versions: [1],
+      capabilities: [...CAPABILITIES],
+      launch,
+    });
+    const events: ProviderEvent[] = [];
+    connection.onEvent((event) => events.push(event));
+    const hideInput = {
+      type: "session.permission",
+      sessionId: open.sessionId,
+      permissionId: question.id,
+      response: { behavior: "deny", message: "Dismissed by user" },
+    } as const;
+    try {
+      await connection.send(open);
+      await bridge.activate("agent-1");
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: "session.permission",
+          request: expect.objectContaining({ id: question.id }),
+        }),
+      );
+      await expect(connection.send(hideInput)).rejects.toThrow("Preference save failed");
+      expect(events.some((event) => event.type === "session.permission_resolved")).toBe(false);
+
+      holdQuestionScan = true;
+      question.text += " updated context";
+      daemon.emit("item/completed", { threadId, turnId: "native-turn", item: question });
+      await vi.waitFor(() => expect(releaseScan).toBeDefined());
+      await connection.send(hideInput);
+      expect(events).toContainEqual({
+        type: "session.permission_resolved",
+        sessionId: open.sessionId,
+        permissionId: question.id,
+      });
+      const afterHide = events.length;
+      releaseScan?.();
+      await bridge.activate("agent-1");
+      expect(events.slice(afterHide).some((event) => event.type === "session.permission")).toBe(
+        false,
+      );
+      expect(daemon.responses).toEqual([]);
+    } finally {
+      releaseScan?.();
+      await connection.close();
+    }
+  });
+
+  it("retains a saved Hide when reconnect finishes an older preference read", async () => {
+    const first = new NativeDaemon();
+    const recovered = new NativeDaemon();
+    const question = {
+      id: "async-question",
+      type: "agentMessage",
+      text: "Choose",
+      delivery: "async",
+      questions: [{ title: "Choose", options: ["One", "Two"] }],
+    };
+    first.item = { ...question } as typeof first.item;
+    recovered.item = { ...question } as typeof recovered.item;
+    let releaseHide: (() => void) | undefined;
+    let releaseRead: ((hidden: ReadonlySet<string>) => void) | undefined;
+    let readCount = 0;
+    let connectionCount = 0;
+    const bridge = createBridgeProvider(
+      async () => "native-turn",
+      {
+        read: async () => {
+          if (readCount++ === 0) return new Set<string>();
+          return new Promise<ReadonlySet<string>>((resolve) => {
+            releaseRead = resolve;
+          });
+        },
+        hide: async () =>
+          new Promise<void>((resolve) => {
+            releaseHide = resolve;
+          }),
+      },
+      async () => (connectionCount++ === 0 ? first : recovered),
+    );
+    const connection = await bridge.registration.connect({
+      versions: [1],
+      capabilities: [...CAPABILITIES],
+      launch,
+    });
+    const events: ProviderEvent[] = [];
+    connection.onEvent((event) => events.push(event));
+    try {
+      await connection.send(open);
+      await bridge.activate("agent-1");
+      const hiding = connection.send({
+        type: "session.permission",
+        sessionId: open.sessionId,
+        permissionId: question.id,
+        response: { behavior: "deny", message: "Dismissed by user" },
+      });
+      await vi.waitFor(() => expect(releaseHide).toBeDefined());
+      await first.close();
+      await vi.waitFor(() => expect(releaseRead).toBeDefined(), { timeout: 5000 });
+      // Saving completes after the reconnect read captured the older preference set.
+      releaseHide?.();
+      await hiding;
+      const afterHide = events.length;
+      releaseRead?.(new Set());
+      await vi.waitFor(
+        () =>
+          expect(events).toContainEqual(
+            expect.objectContaining({
+              type: "session.notice",
+              notice: expect.objectContaining({ description: "Codex connection restored." }),
+            }),
+          ),
+        { timeout: 5000 },
+      );
+      recovered.item.text = "The native question changed after reconnect";
+      recovered.emit("item/completed", { threadId, turnId: "native-turn", itemId: question.id });
+      await bridge.activate("agent-1");
+      expect(
+        events.slice(afterHide).filter((event) => event.type === "session.permission"),
+      ).toEqual([]);
+    } finally {
+      releaseHide?.();
+      releaseRead?.(new Set());
+      await connection.close();
+    }
+  });
+
+  it("opens hidden question history without consuming visible permission capacity", async () => {
+    const daemon = new NativeDaemon();
+    const questions = Array.from({ length: 130 }, (_, index) => ({
+      id: index === 129 ? "visible-question" : `hidden-question-${index}`,
+      type: "agentMessage",
+      delivery: "async",
+      text: `Question ${index}`,
+      questions: [{ title: `Question ${index}`, options: ["Continue"] }],
+    }));
+    const hidden = new Set(
+      questions.slice(0, 129).map((question) => hiddenQuestionLabel(question.id)),
+    );
+    const original = daemon.request.bind(daemon);
+    daemon.request = async (method, params) => {
+      if (method !== "thread/items/list") return original(method, params);
+      const { cursor, limit } = params as { cursor?: string; limit: number };
+      const offset = Number(cursor ?? 0);
+      const page = questions.slice(offset, offset + limit);
+      return {
+        data: page.map((item) => ({
+          turnId: "native-turn",
+          item,
+          startedAtMs: 1234,
+          completedAtMs: null,
+        })),
+        nextCursor: offset + page.length < questions.length ? String(offset + page.length) : null,
+      };
+    };
+    const bridge = createBridgeProvider(
+      async () => "native-turn",
+      { ...visibleQuestions, read: async () => hidden },
+      async () => daemon,
+    );
+    const connection = await bridge.registration.connect({
+      versions: [1],
+      capabilities: [...CAPABILITIES],
+      launch,
+    });
+    const events: ProviderEvent[] = [];
+    connection.onEvent((event) => events.push(event));
+    try {
+      await connection.send(open);
+      expect(events.find((event) => event.type === "request.failed")).toBeUndefined();
+      await bridge.activate("agent-1");
+      expect(events.filter((event) => event.type === "session.permission")).toEqual([
+        expect.objectContaining({ request: expect.objectContaining({ id: "visible-question" }) }),
+      ]);
+    } finally {
+      await connection.close();
+    }
+  });
+
   it("reconciles idle and closed thread notices using the native terminal outcome", async () => {
     const daemon = new NativeDaemon();
     let status = "inProgress";
@@ -400,6 +625,7 @@ describe("shared-thread provider", () => {
     };
     const bridge = createBridgeProvider(
       async () => currentTurn,
+      visibleQuestions,
       async () => daemon,
     );
     const connection = await bridge.registration.connect({
@@ -470,6 +696,7 @@ describe("shared-thread provider", () => {
     };
     const bridge = createBridgeProvider(
       async () => daemon.activeTurn,
+      visibleQuestions,
       async () => daemon,
     );
     const connection = await bridge.registration.connect({
@@ -538,6 +765,7 @@ describe("shared-thread provider", () => {
     let connectionCount = 0;
     const bridge = createBridgeProvider(
       async () => "native-turn",
+      visibleQuestions,
       async () => (connectionCount++ === 0 ? first : recovered),
     );
     const connection = await bridge.registration.connect({
@@ -584,6 +812,7 @@ describe("shared-thread provider", () => {
     let historyAvailable = false;
     const bridge = createBridgeProvider(
       async () => "native-turn",
+      visibleQuestions,
       async () => {
         if (!reconnecting) return daemon;
         const recovered = new NativeDaemon();
@@ -662,6 +891,7 @@ describe("shared-thread provider", () => {
     const daemon = new NativeDaemon();
     const bridge = createBridgeProvider(
       async () => daemon.activeTurn,
+      visibleQuestions,
       async () => daemon,
     );
     const connection = await bridge.registration.connect({
@@ -749,6 +979,7 @@ describe("shared-thread provider", () => {
     let reconnecting = false;
     const bridge = createBridgeProvider(
       async () => "native-turn",
+      visibleQuestions,
       async () => (reconnecting ? recovered : first),
     );
     const connection = await bridge.registration.connect({
@@ -817,6 +1048,7 @@ describe("shared-thread provider", () => {
     };
     const bridge = createBridgeProvider(
       async () => "native-turn",
+      visibleQuestions,
       async () => daemon,
     );
     const connection = await bridge.registration.connect({
@@ -889,7 +1121,7 @@ describe("shared-thread provider", () => {
       return original(method, params);
     };
     const factory = vi.fn(async () => (factory.mock.calls.length === 1 ? first : recovered));
-    const bridge = createBridgeProvider(async () => null, factory);
+    const bridge = createBridgeProvider(async () => null, visibleQuestions, factory);
     const connection = await bridge.registration.connect({
       versions: [1],
       capabilities: [...CAPABILITIES],
@@ -938,7 +1170,7 @@ describe("shared-thread provider", () => {
   it("rejects a stale Paseo steering admission before mutating a newer native turn", async () => {
     const daemon = new NativeDaemon();
     const readHostTurn = vi.fn(async () => "native-turn");
-    const bridge = createBridgeProvider(readHostTurn, async () => daemon);
+    const bridge = createBridgeProvider(readHostTurn, visibleQuestions, async () => daemon);
     const connection = await bridge.registration.connect({
       versions: [1],
       capabilities: [...CAPABILITIES],
@@ -991,7 +1223,7 @@ describe("shared-thread provider", () => {
     const recovered = new NativeDaemon();
     recovered.item.text = "Recovered output";
     const factory = vi.fn(async () => (factory.mock.calls.length === 1 ? first : recovered));
-    const bridge = createBridgeProvider(async () => "native-turn", factory);
+    const bridge = createBridgeProvider(async () => "native-turn", visibleQuestions, factory);
     const connection = await bridge.registration.connect({
       versions: [1],
       capabilities: [...CAPABILITIES],
@@ -1064,6 +1296,7 @@ describe("shared-thread provider", () => {
     };
     const bridge = createBridgeProvider(
       async () => "native-turn",
+      visibleQuestions,
       async () => daemon,
     );
     const connection = await bridge.registration.connect({
@@ -1098,6 +1331,7 @@ describe("shared-thread provider", () => {
     const daemon = new NativeDaemon();
     const bridge = createBridgeProvider(
       async () => "native-turn",
+      visibleQuestions,
       async () => daemon,
     );
     const connection = await bridge.registration.connect({
@@ -1193,6 +1427,7 @@ describe("shared-thread provider", () => {
     };
     const bridge = createBridgeProvider(
       async () => "native-turn",
+      visibleQuestions,
       async () => daemon,
     );
     const connection = await bridge.registration.connect({
@@ -1232,6 +1467,7 @@ describe("shared-thread provider", () => {
     };
     const bridge = createBridgeProvider(
       async () => "native-turn",
+      visibleQuestions,
       async () => daemon,
     );
     const connection = await bridge.registration.connect({
@@ -1268,6 +1504,7 @@ describe("shared-thread provider", () => {
     const daemon = new NativeDaemon();
     const bridge = createBridgeProvider(
       async () => "native-turn",
+      visibleQuestions,
       async () => daemon,
     );
     const connection = await bridge.registration.connect({
