@@ -1447,6 +1447,50 @@ describe("shared-thread provider", () => {
     }
   });
 
+  it("lists terminal threads from a newer verified Codex daemon and rejects unverified releases", async () => {
+    const listWith = async (userAgent: string) => {
+      const daemon = new NativeDaemon();
+      const original = daemon.request.bind(daemon);
+      // Codex 0.169 adds attachedToThreadId; unknown additive fields must be tolerated.
+      const newerThread = { ...nativeThread, attachedToThreadId: null };
+      daemon.request = async (method, params) => {
+        if (method === "initialize") return { userAgent };
+        if (method === "thread/list") return { data: [newerThread], nextCursor: null };
+        if (method === "thread/read") return { thread: newerThread };
+        return original(method, params);
+      };
+      const bridge = createBridgeProvider(
+        async () => "native-turn",
+        visibleQuestions,
+        async () => daemon,
+      );
+      const connection = await bridge.registration.connect({
+        versions: [1],
+        capabilities: [...CAPABILITIES],
+        launch,
+      });
+      const events: ProviderEvent[] = [];
+      connection.onEvent((event) => events.push(event));
+      try {
+        await connection.send({ type: "sessions", requestId: "list" });
+        return events;
+      } finally {
+        await connection.close();
+      }
+    };
+    for (const userAgent of [
+      "codex_cli_rs/0.164.0 (Ubuntu 24.4.0; x86_64) xterm-256color (paseo_bridge_codex; 0.1.0)",
+      "codex_cli_rs/0.169.0 (Ubuntu 24.4.0; x86_64) xterm-256color (paseo_bridge_codex; 0.1.0)",
+    ]) {
+      const result = (await listWith(userAgent)).find((event) => event.type === "sessions");
+      expect(result?.sessions.map((session) => session.persistence)).toEqual([open.persistence]);
+    }
+    for (const userAgent of ["codex_cli_rs/0.163.0 (Linux)", "codex_cli_rs/0.170.0 (Linux)"]) {
+      const failure = (await listWith(userAgent)).find((event) => event.type === "request.failed");
+      expect(failure?.error.message).toContain("Shared Codex daemon must be 0.164.0 to 0.169.x");
+    }
+  });
+
   it("does not resurrect a turn that completes before the prompt acknowledgement", async () => {
     const daemon = new NativeDaemon();
     daemon.activeTurn = null;

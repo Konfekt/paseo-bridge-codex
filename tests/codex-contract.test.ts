@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { execCommand, spawnProcess, terminateProcess } from "@getpaseo/plugin/server";
 import { expect, onTestFinished, test } from "vitest";
+import { isSupportedCodexVersion, userAgentVersion } from "../src/protocol.js";
 import { connectRpc, type RpcClient } from "../src/rpc.js";
 
 test("released Codex shares a durable CLI thread across official proxies without transferring daemon ownership", async () => {
@@ -89,7 +90,7 @@ test("released Codex shares a durable CLI thread across official proxies without
   const socket = join(temp, "control.sock");
   const env = { CODEX_HOME: home, HOME: home, PATH: process.env["PATH"] ?? "" };
   expect((await execCommand(codex, ["--version"], { env })).stdout.trim()).toBe(
-    "codex-cli 0.164.0",
+    "codex-cli 0.169.0",
   );
   const daemon = spawnProcess(codex, ["app-server", "--listen", `unix://${socket}`], {
     env,
@@ -136,7 +137,7 @@ test("released Codex shares a durable CLI thread across official proxies without
     });
     clients.push(terminal);
     await terminal.request("initialize", {
-      clientInfo: { name: "codex-tui", title: "Isolated terminal contract", version: "0.164.0" },
+      clientInfo: { name: "codex-tui", title: "Isolated terminal contract", version: "0.169.0" },
       capabilities: { experimentalApi: true },
     });
     await terminal.notify("initialized", {});
@@ -172,14 +173,16 @@ test("released Codex shares a durable CLI thread across official proxies without
       env,
     });
     clients.push(bridge);
-    await bridge.request("initialize", {
+    const { userAgent } = (await bridge.request("initialize", {
       clientInfo: {
         name: "paseo_bridge_codex",
         title: "Isolated bridge contract",
         version: "0.1.0",
       },
       capabilities: { experimentalApi: true },
-    });
+    })) as { userAgent: string };
+    expect(userAgentVersion(userAgent)).toBe("0.169.0");
+    expect(isSupportedCodexVersion("0.169.0")).toBe(true);
     await bridge.notify("initialized", {});
     expect(await bridge.request("thread/loaded/list", { limit: 100 })).toMatchObject({
       data: [started.thread.id],

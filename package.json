@@ -35,7 +35,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.2",
-    "@openai/codex": "0.164.0",
+    "@openai/codex": "0.169.0",
     "@tsconfig/strictest": "2.0.8",
     "@types/node": "^22.19.0",
     "@types/ws": "8.18.2",

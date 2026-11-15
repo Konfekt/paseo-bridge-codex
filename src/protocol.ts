@@ -4,7 +4,48 @@ import type { ProviderLaunch, ProviderPersistence } from "@getpaseo/plugin/serve
 import { z } from "zod";
 import type { RpcClient } from "./rpc.js";
 
-export const CODEX_VERSION = "0.164.0";
+/** Oldest Codex release whose app-server contract this bridge was verified against. */
+export const CODEX_MIN_VERSION = "0.164.0";
+/** Newest verified Codex release; patch releases of this minor line are accepted too. */
+export const CODEX_MAX_VERSION = "0.169.0";
+export const CODEX_SUPPORTED_RANGE = `${CODEX_MIN_VERSION} to ${CODEX_MAX_VERSION.replace(/\.\d+$/, ".x")}`;
+
+type Release = readonly [number, number, number];
+
+function parseRelease(version: string): Release | null {
+  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
+  return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
+}
+
+function compareReleases(left: Release, right: Release): number {
+  for (let index = 0; index < 3; index++) {
+    const difference = (left[index] ?? 0) - (right[index] ?? 0);
+    if (difference !== 0) return difference;
+  }
+  return 0;
+}
+
+/** Accept stable releases from the minimum through any patch of the newest verified minor. */
+export function isSupportedCodexVersion(version: string): boolean {
+  const release = parseRelease(version);
+  const min = parseRelease(CODEX_MIN_VERSION);
+  const max = parseRelease(CODEX_MAX_VERSION);
+  if (!release || !min || !max) return false;
+  return (
+    compareReleases(release, min) >= 0 &&
+    compareReleases(release, [max[0], max[1], Number.MAX_SAFE_INTEGER]) <= 0
+  );
+}
+
+/** Extract the release from `codex --version` output, e.g. `codex-cli 0.169.0`. */
+export function cliVersion(output: string): string | null {
+  return /^codex-cli (\S+)$/.exec(output.trim())?.[1] ?? null;
+}
+
+/** Extract the daemon release from its initialize user agent, e.g. `codex_cli_rs/0.169.0 (...)`. */
+export function userAgentVersion(userAgent: string): string | null {
+  return /^[^\s/]+\/(\S+?)(?=$|\s)/.exec(userAgent.trim())?.[1] ?? null;
+}
 const MAX_LIST_ITEMS = 10_000;
 const PAGE_SIZE = 100;
 const MAX_LIST_PAGES = 200;

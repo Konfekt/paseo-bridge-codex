@@ -10,7 +10,16 @@ import {
   requireProviderCapabilities,
 } from "@getpaseo/plugin/server/provider";
 import { z } from "zod";
-import { CODEX_VERSION, codexHome, readPages, readPointer, threadSchema } from "./protocol.js";
+import {
+  CODEX_SUPPORTED_RANGE,
+  cliVersion,
+  codexHome,
+  isSupportedCodexVersion,
+  readPages,
+  readPointer,
+  threadSchema,
+  userAgentVersion,
+} from "./protocol.js";
 import type { QuestionVisibility } from "./questions.js";
 import { connectRpc, type RpcClient } from "./rpc.js";
 import { AttachedThread } from "./thread.js";
@@ -55,10 +64,11 @@ export function createBridgeProvider(
             env: launch.env,
             timeout: 5000,
           });
-          if (stdout.trim() !== `codex-cli ${CODEX_VERSION}`)
+          const version = cliVersion(stdout);
+          if (!version || !isSupportedCodexVersion(version))
             return {
               available: false,
-              diagnostic: `Codex ${CODEX_VERSION} is required; found ${stdout.trim()}`,
+              diagnostic: `Codex ${CODEX_SUPPORTED_RANGE} is required; found ${stdout.trim()}`,
             };
           return { available: true };
         } catch (error) {
@@ -168,13 +178,10 @@ function connection(
             capabilities: { experimentalApi: true },
           }),
         );
-        if (
-          !new RegExp(`(?:^|[ /])${CODEX_VERSION.replaceAll(".", "\\.")}(?:$|[^0-9.])`).test(
-            response.userAgent,
-          )
-        )
+        const daemonVersion = userAgentVersion(response.userAgent);
+        if (!daemonVersion || !isSupportedCodexVersion(daemonVersion))
           throw new Error(
-            `Shared Codex daemon must be ${CODEX_VERSION}; received ${response.userAgent}`,
+            `Shared Codex daemon must be ${CODEX_SUPPORTED_RANGE}; received ${response.userAgent}`,
           );
         await client.notify("initialized", {});
         if (closed) throw new Error("Provider closed during connection");
