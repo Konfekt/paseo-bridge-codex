@@ -11,14 +11,16 @@ import {
 } from "@getpaseo/plugin/server/provider";
 import { z } from "zod";
 import {
-  CODEX_SUPPORTED_RANGE,
+  CODEX_MIN_VERSION,
   cliVersion,
   codexHome,
+  codexVersionRequirement,
   isSupportedCodexVersion,
   readPages,
   readPointer,
   threadSchema,
   userAgentVersion,
+  warnTentativeCodex,
 } from "./protocol.js";
 import type { QuestionVisibility } from "./questions.js";
 import { connectRpc, type RpcClient } from "./rpc.js";
@@ -66,11 +68,9 @@ export function createBridgeProvider(
           });
           const version = cliVersion(stdout);
           if (!version || !isSupportedCodexVersion(version))
-            return {
-              available: false,
-              diagnostic: `Codex ${CODEX_SUPPORTED_RANGE} is required; found ${stdout.trim()}`,
-            };
-          return { available: true };
+            return { available: false, diagnostic: codexVersionRequirement(stdout.trim()) };
+          const warning = warnTentativeCodex("Codex CLI", version);
+          return warning ? { available: true, diagnostic: warning } : { available: true };
         } catch (error) {
           return { available: false, diagnostic: message(error) };
         }
@@ -181,8 +181,9 @@ function connection(
         const daemonVersion = userAgentVersion(response.userAgent);
         if (!daemonVersion || !isSupportedCodexVersion(daemonVersion))
           throw new Error(
-            `Shared Codex daemon must be ${CODEX_SUPPORTED_RANGE}; received ${response.userAgent}`,
+            `Shared Codex daemon must be ${CODEX_MIN_VERSION} or newer; received ${response.userAgent}`,
           );
+        warnTentativeCodex("Shared Codex daemon", daemonVersion);
         await client.notify("initialized", {});
         if (closed) throw new Error("Provider closed during connection");
         rpc = client;

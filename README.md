@@ -6,7 +6,11 @@ The package supplies a **Codex Terminal** provider (`codex-terminal`) and one pl
 
 ## Setup
 
-The supported releases are **Paseo 0.14.0** with **Codex 0.164.0 through 0.169.x** (verified against 0.164.0 on 2026-10-30 and 0.169.0 on 2026-11-15). Releases outside that range, including pre-releases, are rejected, not adapted; widen the range in `src/protocol.ts` only after re-running `pnpm verify` against the new release. Node.js 22.22 or newer is required. Runtime tests ran on Linux; Windows and macOS have not been verified. The bridge requires Codex's Unix control socket.
+Supported releases:
+- **Paseo 0.14.0 or newer** (manifest requirement `>=0.14.0`). The plugin's own Paseo helpers are locked to **0.15.4**; the released-host tests pass on Paseo 0.15.4 and 0.14.0. Newer Paseo releases, including betas, are allowed tentatively.
+- **Codex 0.164.0 or newer.** **0.164.0 through 0.169.x** is verified (0.164.0 on 2026-10-30, 0.169.0 on 2026-11-15). Newer releases and pre-releases are accepted **tentatively**: the bridge logs a warning once per version (`... is newer than the tested Codex range ...; continuing tentatively`) and keeps working instead of refusing. Releases older than 0.164.0, and pre-releases of 0.164.0 itself, are rejected because they lack the app-server methods the bridge uses. To promote a newer Codex to verified, run `pnpm verify` against it and raise `CODEX_TESTED_VERSION` in `src/protocol.ts`.
+
+Node.js 22.22 or newer is required. Runtime tests ran on Linux; Windows and macOS have not been verified. The bridge requires Codex's Unix control socket.
 
 ### Install from GitHub
 
@@ -23,7 +27,7 @@ The pinned Paseo helpers resolve from this plugin's own dependency directory, cr
 
 The root `pluginsEnabled` setting must be `true` for installed plugins to run. Installation does not enable this global setting. A running plugin starts discovery automatically; no dedicated terminal or separate service is required.
 
-Codex must use its shared daemon. Set `daemon_auto_start = true` in the existing `[features]` section of Codex's `config.toml`, preserving other settings. This starts Codex's daemon, not the discovery worker. Check both `codex --version` and `codex app-server daemon version`: an already-running daemon may still use an older release. If needed, run `codex app-server daemon update --from-cli` once active work is idle; updating can interrupt running work. Both must be within the supported Codex range.
+Codex must use its shared daemon. Set `daemon_auto_start = true` in the existing `[features]` section of Codex's `config.toml`, preserving other settings. This starts Codex's daemon, not the discovery worker. Check both `codex --version` and `codex app-server daemon version`: an already-running daemon may still use an older release. If needed, run `codex app-server daemon update --from-cli` once active work is idle; updating can interrupt running work. Both must be 0.164.0 or newer; ideally they are the same release.
 
 ### Install a local checkout
 

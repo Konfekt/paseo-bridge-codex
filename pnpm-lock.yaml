@@ -208,17 +208,17 @@ importers:
   .:
     dependencies:
       "@getpaseo/client":
-        specifier: 0.14.0
-        version: 0.14.0
+        specifier: 0.15.4
+        version: 0.15.4
       "@getpaseo/plugin":
-        specifier: 0.14.0
-        version: 0.14.0(@getpaseo/client@0.14.0)(@getpaseo/protocol@0.14.0)(react@19.3.1)(typescript@7.0.2)(zod@4.6.7)
+        specifier: 0.15.4
+        version: 0.15.4(@getpaseo/client@0.15.4)(@getpaseo/protocol@0.15.4)(react@19.3.1)(typescript@7.0.2)(zod@4.6.7)
       "@getpaseo/protocol":
-        specifier: 0.14.0
-        version: 0.14.0
+        specifier: 0.15.4
+        version: 0.15.4
       "@getpaseo/server":
-        specifier: 0.14.0
-        version: 0.14.0(effect@4.0.0-rc.112)(react@19.3.1)
+        specifier: 0.15.4
+        version: 0.15.4(@xterm/xterm@6.1.0-beta.337)(effect@4.0.0-rc.112)(react@19.3.1)
       ws:
         specifier: 8.22.0
         version: 8.22.0
@@ -754,26 +754,26 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  "@getpaseo/client@0.14.0":
+  "@getpaseo/client@0.15.4":
     resolution:
       {
-        integrity: sha512-TkDBrhQw4koQI3J2Vlo61M7l7EOCk4AQIZ1dr13SVYVEcofwj+I9R/fqXYkC/nuCl85GsJupxkeEPy5hEItznw==,
+        integrity: sha512-Z8kpIYbuF+vzZwOTT0NYUymUxTuU+KL8NtFEkf0nfip20RIftVyJZGpjAa3In9Q6nTA23GlV1j3Oi6W5IedJhQ==,
       }
 
-  "@getpaseo/highlight@0.14.0":
+  "@getpaseo/highlight@0.15.4":
     resolution:
       {
-        integrity: sha512-Vtms5va0mb2hT8v1ip6LHAz0bUKd6c1XTJ79MORH1clybPRp9dnwOkx95FDSMwFdzM3oyTw3CHhAyp4cgd6BGQ==,
+        integrity: sha512-JdXm9mYV8rbT38ImDpiD/kVUlDRPZ/gFufH9Wd5l++8HC0rgHdR1PmHKq434OCKHwh2dFprNY6VjoIo5v0uxZA==,
       }
 
-  "@getpaseo/plugin@0.14.0":
+  "@getpaseo/plugin@0.15.4":
     resolution:
       {
-        integrity: sha512-CAxPU2mUrscOGeIWc3ESOp1Hwoy8jwhks3hctQO1VJNoDskKUtOHkPKQej/yuscRKH7XXSj7nfc1aG87nseQqg==,
+        integrity: sha512-nhGFVqWi7ZeuNfO+m0LnUl6KDlJUWFu1u5wRIzTcX8RVnEafo7vG7M/Z1w/7ugKtNFigQ280+d+53ZxqErVzbQ==,
       }
     peerDependencies:
-      "@getpaseo/client": 0.14.0
-      "@getpaseo/protocol": 0.14.0
+      "@getpaseo/client": 0.15.4
+      "@getpaseo/protocol": 0.15.4
       react: ">=19.1.0 <20"
       react-native: ">=0.81.5"
       zod: ^4.4.3
@@ -781,22 +781,22 @@ packages:
       react-native:
         optional: true
 
-  "@getpaseo/protocol@0.14.0":
+  "@getpaseo/protocol@0.15.4":
     resolution:
       {
-        integrity: sha512-fF0na1u91sKKgk6R0EKtXQMTJKbqLx8jZ8IuiUcm3jLVOnGruAvPggAQVAzm4MX2mrikesj3immqztHjPNxjTQ==,
+        integrity: sha512-/TCIgaKbGmy7j91PKxrt6S71Ogrk7ywrYJmmWKC6Zazxh/vpEmAmp0R3DVkanUYjEYbxiNQexAIQttfxtiwybQ==,
       }
 
-  "@getpaseo/relay@0.14.0":
+  "@getpaseo/relay@0.15.4":
     resolution:
       {
-        integrity: sha512-nLEQ3JkCe7NUWrbQadYVjgiIbVB6g3BMNyGxZrtX42RjsKvJJ+/jjowuSChU26G7AjZ6KY0T5lE+OlYpLlfqHA==,
+        integrity: sha512-p/2dcu1VvvNTXMi+lf7g03fSshy+BQhi6FTfoJbTm4ZQNqQJjlYS8qPynAbtKzTCbumbXCGRv3VF95uclFOZ/A==,
       }
 
-  "@getpaseo/server@0.14.0":
+  "@getpaseo/server@0.15.4":
     resolution:
       {
-        integrity: sha512-jjiiwhkGRo3MzrhoO3ZfcK6/MIaPpe5AwML9Lo6S4YPcBAVK8M8g6RemfwuLda76g4HLAYAFuTph2zWznQnX4g==,
+        integrity: sha512-LB0WwgQKXlq+OsUwReBgFUQfy25QC3FRNuKSyIqR7P/wpE2yIv4S0QXQbZ1vckLSv5wOrNhSct0eOi/T+fnRYQ==,
       }
 
   "@hono/node-server@1.19.17":
@@ -1533,10 +1533,30 @@ packages:
         integrity: sha512-lwJRExuH417257Q5wv9QYugN9IMJkoxcrKrYxGPQkBzl7wlNpTUxD/5yNX4ESKVUIShKPgkGchYPFMWOOk0wzw==,
       }
 
-  "@xterm/headless@6.0.0":
+  "@xterm/addon-serialize@0.14.0":
     resolution:
       {
-        integrity: sha512-5Yj1QINYCyzrZtf8OFIHi47iQtI+0qYFPHmouEfG8dHNxbZ9Tb9YGSuLcsEwj9Z+OL75GJqPyJbyoFer80a2Hw==,
+        integrity: sha512-uteyTU1EkrQa2Ux6P/uFl2fzmXI46jy5uoQMKEOM0fKTyiW7cSn0WrFenHm5vO5uEXX/GpwW/FgILvv3r0WbkA==,
+      }
+
+  "@xterm/addon-unicode-graphemes@0.5.0-beta.330":
+    resolution:
+      {
+        integrity: sha512-Zoiv/8tmku4LcU7bEL6zer+DNN6p6F8VCkyviSmbDxpA/W9zSnWDiD/ZpwFDQqegwjSptGzBNMhW2Os1sa+lUw==,
+      }
+    peerDependencies:
+      "@xterm/xterm": ^6.1.0-beta.336
+
+  "@xterm/headless@6.1.0-beta.334":
+    resolution:
+      {
+        integrity: sha512-QkwuIeP9dXlk/eOsAbqX8AvtS/W8EhRo6dkl2YYZr+jWAWSfDDMi+zPlegWUflSdsRKMURMvzvvkVZr6GztK4g==,
+      }
+
+  "@xterm/xterm@6.1.0-beta.337":
+    resolution:
+      {
+        integrity: sha512-zstczNBAT/FaaWzCCoLx3DavRcAW0ndK7g/Y0893nPvZwWmjMU8WeuqJYqMRVommGwv1KRoxdlOOt0KukxHadA==,
       }
 
   accepts@1.3.8:
@@ -1552,6 +1572,13 @@ packages:
         integrity: sha512-5cvg6CtKwfgdmVqY1WIiXKc3Q1bkRqGLi+2W/6ao+6Y7gu/RCwRuAhGEzh5B4KlszSuTLgZYuqFqo5bImjNKng==,
       }
     engines: { node: ">= 0.6" }
+
+  agent-base@7.1.4:
+    resolution:
+      {
+        integrity: sha512-MnA+YT8fwfJPgBx3m60MNqakm30XOkyIoH1y6huTQvC0PwZG7ki8NacLBcrPbNoo8vEZy7Jpuk7+jMO+CUovTQ==,
+      }
+    engines: { node: ">= 14" }
 
   ai@5.0.78:
     resolution:
@@ -2159,6 +2186,13 @@ packages:
         integrity: sha512-4FbRdAX+bSdmo4AUFuS0WNiPz8NgFt+r8ThgNWmlrjQjt1Q7ZR9+zTlce2859x4KSXrwIsaeTqDoKQmtP8pLmQ==,
       }
     engines: { node: ">= 0.8" }
+
+  https-proxy-agent@7.0.6:
+    resolution:
+      {
+        integrity: sha512-vK9P5/iUfdl95AI+JVyUuIcVtd4ofvtrOr3HNtM2yxC9bnMbEdp3x01OhQNnjb8IJYi38VlTE3mBXwcfvywuSw==,
+      }
+    engines: { node: ">= 14" }
 
   i18next@26.5.8:
     resolution:
@@ -3271,6 +3305,13 @@ packages:
         integrity: sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ==,
       }
 
+  undici@7.30.2:
+    resolution:
+      {
+        integrity: sha512-mLyPQnHwUxaM/rideoK/+KL8DaAJLRl4aBCfmX444aCSLnIaomqPLtNRe2jdCYcsk5wZzXrDIQC8ZeYNRAYyIA==,
+      }
+    engines: { node: ">=20.18.1" }
+
   unpipe@1.0.0:
     resolution:
       {
@@ -3733,17 +3774,17 @@ snapshots:
   "@esbuild/win32-x64@0.25.12":
     optional: true
 
-  "@getpaseo/client@0.14.0":
+  "@getpaseo/client@0.15.4":
     dependencies:
-      "@getpaseo/protocol": 0.14.0
-      "@getpaseo/relay": 0.14.0
+      "@getpaseo/protocol": 0.15.4
+      "@getpaseo/relay": 0.15.4
       ws: 8.22.0
       zod: 4.6.7
     transitivePeerDependencies:
       - bufferutil
       - utf-8-validate
 
-  "@getpaseo/highlight@0.14.0":
+  "@getpaseo/highlight@0.15.4":
     dependencies:
       "@codemirror/language": 6.12.4
       "@codemirror/legacy-modes": 6.5.5
@@ -3765,11 +3806,11 @@ snapshots:
       "@lezer/yaml": 1.0.4
       lezer-elixir: 1.1.3
 
-  "@getpaseo/plugin@0.14.0(@getpaseo/client@0.14.0)(@getpaseo/protocol@0.14.0)(react@19.3.1)(typescript@5.9.3)(zod@4.6.7)":
+  "@getpaseo/plugin@0.15.4(@getpaseo/client@0.15.4)(@getpaseo/protocol@0.15.4)(react@19.3.1)(typescript@5.9.3)(zod@4.6.7)":
     dependencies:
       "@agentclientprotocol/sdk": 1.9.0(zod@4.6.7)
-      "@getpaseo/client": 0.14.0
-      "@getpaseo/protocol": 0.14.0
+      "@getpaseo/client": 0.15.4
+      "@getpaseo/protocol": 0.15.4
       i18next: 26.5.8(typescript@5.9.3)
       react: 19.3.1
       use-sync-external-store: 1.7.0(react@19.3.1)
@@ -3777,11 +3818,11 @@ snapshots:
     transitivePeerDependencies:
       - typescript
 
-  "@getpaseo/plugin@0.14.0(@getpaseo/client@0.14.0)(@getpaseo/protocol@0.14.0)(react@19.3.1)(typescript@7.0.2)(zod@4.6.7)":
+  "@getpaseo/plugin@0.15.4(@getpaseo/client@0.15.4)(@getpaseo/protocol@0.15.4)(react@19.3.1)(typescript@7.0.2)(zod@4.6.7)":
     dependencies:
       "@agentclientprotocol/sdk": 1.9.0(zod@4.6.7)
-      "@getpaseo/client": 0.14.0
-      "@getpaseo/protocol": 0.14.0
+      "@getpaseo/client": 0.15.4
+      "@getpaseo/protocol": 0.15.4
       i18next: 26.5.8(typescript@7.0.2)
       react: 19.3.1
       use-sync-external-store: 1.7.0(react@19.3.1)
@@ -3789,12 +3830,12 @@ snapshots:
     transitivePeerDependencies:
       - typescript
 
-  "@getpaseo/protocol@0.14.0":
+  "@getpaseo/protocol@0.15.4":
     dependencies:
       semver: 7.8.5
       zod: 4.6.7
 
-  "@getpaseo/relay@0.14.0":
+  "@getpaseo/relay@0.15.4":
     dependencies:
       "@noble/ciphers": 2.4.0
       "@noble/curves": 2.4.0
@@ -3806,21 +3847,23 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
-  "@getpaseo/server@0.14.0(effect@4.0.0-rc.112)(react@19.3.1)":
+  "@getpaseo/server@0.15.4(@xterm/xterm@6.1.0-beta.337)(effect@4.0.0-rc.112)(react@19.3.1)":
     dependencies:
       "@agentclientprotocol/sdk": 0.17.1(zod@4.6.7)
       "@anthropic-ai/claude-agent-sdk": 0.3.246(@anthropic-ai/sdk@0.104.2(zod@4.6.7))(@modelcontextprotocol/sdk@1.29.0(zod@4.6.7))(zod@4.6.7)
       "@anthropic-ai/sdk": 0.104.2(zod@4.6.7)
-      "@getpaseo/client": 0.14.0
-      "@getpaseo/highlight": 0.14.0
-      "@getpaseo/plugin": 0.14.0(@getpaseo/client@0.14.0)(@getpaseo/protocol@0.14.0)(react@19.3.1)(typescript@5.9.3)(zod@4.6.7)
-      "@getpaseo/protocol": 0.14.0
-      "@getpaseo/relay": 0.14.0
+      "@getpaseo/client": 0.15.4
+      "@getpaseo/highlight": 0.15.4
+      "@getpaseo/plugin": 0.15.4(@getpaseo/client@0.15.4)(@getpaseo/protocol@0.15.4)(react@19.3.1)(typescript@5.9.3)(zod@4.6.7)
+      "@getpaseo/protocol": 0.15.4
+      "@getpaseo/relay": 0.15.4
       "@isaacs/ttlcache": 2.1.5
       "@modelcontextprotocol/sdk": 1.29.0(zod@4.6.7)
       "@opencode-ai/sdk": 1.14.46
       "@opencode/client": 2.0.10(effect@4.0.0-rc.112)
-      "@xterm/headless": 6.0.0
+      "@xterm/addon-serialize": 0.14.0
+      "@xterm/addon-unicode-graphemes": 0.5.0-beta.330(@xterm/xterm@6.1.0-beta.337)
+      "@xterm/headless": 6.1.0-beta.334
       ai: 5.0.78(zod@4.6.7)
       ajv: 8.20.0
       bcryptjs: 3.0.3
@@ -3828,6 +3871,7 @@ snapshots:
       esbuild: 0.25.12
       express: 4.22.3
       fast-deep-equal: 3.1.3
+      https-proxy-agent: 7.0.6
       lru-cache: 11.5.3
       markdown-it: 10.0.0
       mnemonic-id: 3.2.7
@@ -3845,6 +3889,7 @@ snapshots:
       strip-ansi: 7.2.0
       tree-kill: 1.2.2
       typescript: 5.9.3
+      undici: 7.30.2
       uuid: 9.0.1
       which: 5.0.0
       ws: 8.22.0
@@ -3855,6 +3900,7 @@ snapshots:
       - "@cfworker/json-schema"
       - "@smithy/hash-node"
       - "@smithy/signature-v4"
+      - "@xterm/xterm"
       - bufferutil
       - effect
       - react
@@ -4212,7 +4258,15 @@ snapshots:
 
   "@vitest/spy@5.0.5": {}
 
-  "@xterm/headless@6.0.0": {}
+  "@xterm/addon-serialize@0.14.0": {}
+
+  "@xterm/addon-unicode-graphemes@0.5.0-beta.330(@xterm/xterm@6.1.0-beta.337)":
+    dependencies:
+      "@xterm/xterm": 6.1.0-beta.337
+
+  "@xterm/headless@6.1.0-beta.334": {}
+
+  "@xterm/xterm@6.1.0-beta.337": {}
 
   accepts@1.3.8:
     dependencies:
@@ -4223,6 +4277,8 @@ snapshots:
     dependencies:
       mime-types: 3.0.2
       negotiator: 1.1.0
+
+  agent-base@7.1.4: {}
 
   ai@5.0.78(zod@4.6.7):
     dependencies:
@@ -4628,6 +4684,13 @@ snapshots:
       setprototypeof: 1.2.0
       statuses: 2.0.2
       toidentifier: 1.0.1
+
+  https-proxy-agent@7.0.6:
+    dependencies:
+      agent-base: 7.1.4
+      debug: 4.4.3
+    transitivePeerDependencies:
+      - supports-color
 
   i18next@26.5.8(typescript@5.9.3):
     optionalDependencies:
@@ -5243,6 +5306,8 @@ snapshots:
   uc.micro@1.0.6: {}
 
   undici-types@6.21.0: {}
+
+  undici@7.30.2: {}
 
   unpipe@1.0.0: {}
 

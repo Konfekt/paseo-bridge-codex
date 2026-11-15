@@ -1,3 +1,6 @@
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type {
   ProviderEvent,
   ProviderInput,
@@ -1447,7 +1450,8 @@ describe("shared-thread provider", () => {
     }
   });
 
-  it("lists terminal threads from a newer verified Codex daemon and rejects unverified releases", async () => {
+  it("lists terminal threads from verified and newer Codex daemons and rejects older releases", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const listWith = async (userAgent: string) => {
       const daemon = new NativeDaemon();
       const original = daemon.request.bind(daemon);
@@ -1481,13 +1485,52 @@ describe("shared-thread provider", () => {
     for (const userAgent of [
       "codex_cli_rs/0.164.0 (Ubuntu 24.4.0; x86_64) xterm-256color (paseo_bridge_codex; 0.1.0)",
       "codex_cli_rs/0.169.0 (Ubuntu 24.4.0; x86_64) xterm-256color (paseo_bridge_codex; 0.1.0)",
+      "codex_cli_rs/0.170.0 (Linux)",
+      "codex_cli_rs/0.171.0-alpha.5 (Linux)",
     ]) {
       const result = (await listWith(userAgent)).find((event) => event.type === "sessions");
       expect(result?.sessions.map((session) => session.persistence)).toEqual([open.persistence]);
     }
-    for (const userAgent of ["codex_cli_rs/0.163.0 (Linux)", "codex_cli_rs/0.170.0 (Linux)"]) {
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("Shared Codex daemon 0.170.0 is newer than the tested Codex range"),
+    );
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("Shared Codex daemon 0.171.0-alpha.5 is newer"),
+    );
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining("0.169.0"));
+    for (const userAgent of [
+      "codex_cli_rs/0.163.0 (Linux)",
+      "codex_cli_rs/0.164.0-alpha.11.1 (Linux)",
+    ]) {
       const failure = (await listWith(userAgent)).find((event) => event.type === "request.failed");
-      expect(failure?.error.message).toContain("Shared Codex daemon must be 0.164.0 to 0.169.x");
+      expect(failure?.error.message).toContain("Shared Codex daemon must be 0.164.0 or newer");
+    }
+    warn.mockRestore();
+  });
+
+  it("reports a newer Codex CLI as available with a warning and rejects an older one", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "pbc-status-"));
+    const statusFor = async (version: string) => {
+      const command = join(directory, `codex-${version}`);
+      await writeFile(command, `#!/bin/sh\necho "codex-cli ${version}"\n`);
+      await chmod(command, 0o755);
+      const bridge = createBridgeProvider(async () => null, visibleQuestions);
+      return bridge.registration.status?.({ launch: { command, args: [], env: {} } });
+    };
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      expect(await statusFor("0.169.0")).toEqual({ available: true });
+      const tentative = await statusFor("0.173.0");
+      expect(tentative).toMatchObject({ available: true });
+      expect(tentative?.diagnostic).toContain("Codex CLI 0.173.0 is newer than the tested");
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(await statusFor("0.163.0")).toEqual({
+        available: false,
+        diagnostic: "Codex 0.164.0 or newer is required; found codex-cli 0.163.0",
+      });
+    } finally {
+      warn.mockRestore();
+      await rm(directory, { recursive: true, force: true });
     }
   });
 

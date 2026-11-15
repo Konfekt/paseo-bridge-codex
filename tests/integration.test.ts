@@ -1,5 +1,5 @@
 import { once } from "node:events";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { hostname, tmpdir } from "node:os";
@@ -221,11 +221,17 @@ test("plugin lifecycle discovers, restores and steers terminal threads without a
   });
   http.listen(join(codexHome, "app-server-control", "app-server-control.sock"));
   await once(http, "listening");
+  // Run the host as the Paseo release this checkout is locked to, so its plugin requirement check is real.
+  const { dependencies } = JSON.parse(await readFile(resolve("package.json"), "utf8")) as {
+    dependencies: Record<string, string>;
+  };
+  const paseoVersion = dependencies["@getpaseo/server"];
+  if (!paseoVersion) throw new Error("Missing @getpaseo/server dependency");
   let daemon = await createPaseoDaemon(
     {
       listen: "127.0.0.1:0",
       paseoHome,
-      daemonVersion: "0.14.0",
+      daemonVersion: paseoVersion,
       corsAllowedOrigins: [],
       hostnames: true,
       mcpEnabled: false,
