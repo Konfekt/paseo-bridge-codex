@@ -130,3 +130,19 @@ test("expires unknown-outcome mutations once and ignores their late replies", as
   await delay(200);
   await expect(client.request("identity", {})).resolves.toMatchObject({ env: "exact environment" });
 }, 20_000);
+
+test("reports a missing executable and the proxy's own reason for a failed handshake", async () => {
+  await expect(connectRpc({ ...launch, command: "/nonexistent/codex" })).rejects.toThrow(
+    "Could not start /nonexistent/codex",
+  );
+  const failure = await connectRpc({ ...launch, args: [...launch.args, "no-socket"] }).catch(
+    (error: unknown) => error,
+  );
+  expect(failure).toBeInstanceOf(Error);
+  expect((failure as Error).message).toMatch(
+    /Could not connect through the Codex app-server proxy/,
+  );
+  expect((failure as Error).message).toContain(
+    "failed to connect to socket at /missing/control.sock",
+  );
+});

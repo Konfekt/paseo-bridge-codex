@@ -1,4 +1,6 @@
 import { setTimeout as delay } from "node:timers/promises";
+import { errorMessage } from "./errors.js";
+import { PROVIDER_ID } from "./ids.js";
 
 export interface DiscoverableSession {
   providerId: string;
@@ -18,7 +20,12 @@ export interface DiscoveryClient {
   load(agentId: string): Promise<void>;
   activate(agentId: string): Promise<void>;
 }
-const PROVIDER_ID = "codex-terminal";
+
+function attachedTo(agent: AttachedAgent, session: DiscoverableSession): boolean {
+  return (
+    agent.provider === PROVIDER_ID && agent.persistence?.sessionId === session.providerHandleId
+  );
+}
 
 export async function discoverOnce(client: DiscoveryClient, signal?: AbortSignal): Promise<void> {
   signal?.throwIfAborted();
@@ -29,7 +36,7 @@ export async function discoverOnce(client: DiscoveryClient, signal?: AbortSignal
   const recordFailure = (identity: string, cause: unknown) => {
     signal?.throwIfAborted();
     failures.push(
-      new Error(`${identity}: ${cause instanceof Error ? cause.message : String(cause)}`, {
+      new Error(`${identity}: ${errorMessage(cause)}`, {
         cause,
       }),
     );
@@ -47,24 +54,18 @@ export async function discoverOnce(client: DiscoveryClient, signal?: AbortSignal
   for (const session of sessions) {
     signal?.throwIfAborted();
     if (session.providerId !== PROVIDER_ID) continue;
-    if (
-      agents.some(
-        (agent) =>
-          agent.provider === PROVIDER_ID &&
-          agent.persistence?.sessionId === session.providerHandleId,
-      )
-    )
-      continue;
+    if (agents.some((agent) => attachedTo(agent, session))) continue;
     let imported: AttachedAgent;
     try {
       imported = await client.importSession(session);
     } catch (error) {
       // An import can succeed before its response is lost, or race another worker.
-      const reconciled = (await client.agents()).find(
-        (agent) =>
-          agent.provider === PROVIDER_ID &&
-          agent.persistence?.sessionId === session.providerHandleId,
-      );
+      let reconciled: AttachedAgent | undefined;
+      try {
+        reconciled = (await client.agents()).find((agent) => attachedTo(agent, session));
+      } catch {
+        // The original import error is the actionable one; later sessions still proceed.
+      }
       if (!reconciled) {
         recordFailure(`Session ${session.providerHandleId}`, error);
         continue;
@@ -114,7 +115,10 @@ export async function watchDiscovery(
         retryDelayMs = Math.min(retryDelayMs * 2, MAX_RETRY_DELAY_MS);
       }
     } finally {
-      await connection?.close();
+      // A failed close must not end the loop; the next pass opens a fresh connection.
+      await connection?.close().catch((error: unknown) => {
+        if (!signal.aborted) onError(error);
+      });
     }
     if (signal.aborted) return;
     try {

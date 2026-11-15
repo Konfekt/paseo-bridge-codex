@@ -9,6 +9,7 @@ import {
   isPidLockOwnerRunning,
 } from "../node_modules/@getpaseo/server/dist/server/server/pid-lock.js";
 import type { AttachedAgent, DiscoveryClient } from "./discovery.js";
+import { PLUGIN_ID, PROVIDER_ID } from "./ids.js";
 
 const DIRECTORY_PAGE_SIZE = 200;
 const MAX_DIRECTORY_PAGES = 100;
@@ -55,11 +56,11 @@ export async function connectPaseoHost(
       discovery: {
         async sessions() {
           const response = await client.fetchRecentProviderSessions({
-            providers: ["codex-terminal"],
+            providers: [PROVIDER_ID],
             limit: MAX_DISCOVERED_SESSIONS,
           });
           const providerError = response.providerErrors?.find(
-            (error) => error.provider === "codex-terminal",
+            (error) => error.provider === PROVIDER_ID,
           );
           if (providerError) throw new Error(providerError.message);
           if (response.entries.length >= MAX_DISCOVERED_SESSIONS)
@@ -90,13 +91,13 @@ export async function connectPaseoHost(
             providerId: session.providerId,
             providerHandleId: session.providerHandleId,
             cwd: session.cwd,
-            labels: { "bridge.owner": "paseo-bridge-codex" },
+            labels: { "bridge.owner": PLUGIN_ID },
           }),
         async load(agentId) {
           await client.fetchAgentTimeline(agentId, { direction: "tail", limit: 1 });
         },
         async activate(agentId) {
-          await client.invokePluginRpc("paseo-bridge-codex", "activate", { agentId });
+          await client.invokePluginRpc(PLUGIN_ID, "activate", { agentId });
         },
       },
     };

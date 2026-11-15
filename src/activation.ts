@@ -13,16 +13,22 @@ const activate = defineRpc({
   output: z.object({ activated: z.boolean() }),
 });
 
+/** Read a live, unarchived Codex Terminal agent. */
+async function readAttachment(paseo: PaseoApi, agentId: string) {
+  const result = await paseo.agents.ref(agentId).refresh();
+  if (!result || result.agent.provider !== PROVIDER_ID)
+    throw new Error("Agent is not a Codex Terminal attachment");
+  if (result.agent.archivedAt) throw new Error("Codex Terminal attachment is archived");
+  return result.agent;
+}
+
 export function registerBridge(server: PluginServerContext): () => Promise<void> {
   const paseoHome = process.env["PASEO_HOME"];
   if (!paseoHome) throw new Error("Paseo must supply PASEO_HOME for automatic Codex discovery");
   let paseo: PaseoApi | undefined;
   const readAgent = async (agentId: string) => {
     if (!paseo) throw new Error("Paseo session-open context is unavailable");
-    const result = await paseo.agents.ref(agentId).refresh();
-    if (!result || result.agent.provider !== PROVIDER_ID || result.agent.archivedAt)
-      throw new Error("Codex Terminal attachment is unavailable or archived");
-    return result.agent;
+    return readAttachment(paseo, agentId);
   };
   const bridge = createBridgeProvider(
     async (agentId) => (await readAgent(agentId)).activeTurn?.turnId ?? null,
@@ -31,6 +37,7 @@ export function registerBridge(server: PluginServerContext): () => Promise<void>
       async hide(agentId, questionId) {
         const key = hiddenQuestionLabel(questionId);
         const agent = await readAgent(agentId);
+        // Validate the new label set (format and size budget) before saving it.
         readHiddenQuestionLabels({ ...agent.labels, [key]: "true" });
         const connection = await connectPaseoHost(paseoHome);
         try {
@@ -48,10 +55,7 @@ export function registerBridge(server: PluginServerContext): () => Promise<void>
     return { ...request, env: { ...request.env, [AGENT_ID_ENV]: request.agentId } };
   });
   server.handle(activate, async ({ agentId }, context) => {
-    const result = await context.paseo.agents.ref(agentId).refresh();
-    if (!result || result.agent.provider !== PROVIDER_ID)
-      throw new Error("Agent is not a Codex Terminal attachment");
-    if (result.agent.archivedAt) throw new Error("Archived Codex attachments are not activated");
+    await readAttachment(context.paseo, agentId);
     return { activated: await bridge.activate(agentId) };
   });
   const controller = new AbortController();

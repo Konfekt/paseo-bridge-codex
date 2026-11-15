@@ -6,7 +6,11 @@ The package supplies a **Codex Terminal** provider (`codex-terminal`) and one pl
 
 ## Setup
 
-The tested release pair is **Paseo 0.14.0 + Codex 0.164.0**, checked on 2026-10-30. Other versions are rejected, not adapted. Node.js 22.22 or newer is required. Runtime tests ran on Linux; Windows and macOS have not been verified. The bridge requires Codex's Unix control socket.
+Supported releases:
+- **Paseo 0.14.0 or newer** (manifest requirement `>=0.14.0`). The plugin's own Paseo helpers are locked to **0.15.4**; the released-host tests pass on Paseo 0.15.4 and 0.14.0. Newer Paseo releases, including betas, are allowed tentatively.
+- **Codex 0.164.0 or newer.** **0.164.0 through 0.169.x** is verified. Newer releases and pre-releases are accepted **tentatively**: the bridge logs a warning once per version (`... is newer than the tested Codex range ...; continuing tentatively`) and keeps working instead of refusing. Releases older than 0.164.0, and pre-releases of 0.164.0 itself, are rejected because they lack the app-server methods the bridge uses. See [docs/verification.md](docs/verification.md#checking-a-new-release) for promoting a newer release to verified.
+
+Node.js 22.22 or newer is required. Runtime tests ran on Linux; Windows and macOS have not been verified. The bridge requires Codex's Unix control socket.
 
 ### Install from GitHub
 
@@ -23,7 +27,7 @@ The pinned Paseo helpers resolve from this plugin's own dependency directory, cr
 
 The root `pluginsEnabled` setting must be `true` for installed plugins to run. Installation does not enable this global setting. A running plugin starts discovery automatically; no dedicated terminal or separate service is required.
 
-Codex must use its shared daemon. Set `daemon_auto_start = true` in the existing `[features]` section of Codex's `config.toml`, preserving other settings. This starts Codex's daemon, not the discovery worker. Check both `codex --version` and `codex app-server daemon version`: an already-running daemon may still use an older release. If needed, run `codex app-server daemon update --from-cli` once active work is idle; updating can interrupt running work. Both must match the supported Codex release.
+Codex must use its shared daemon. Set `daemon_auto_start = true` in the existing `[features]` section of Codex's `config.toml`, preserving other settings. This starts Codex's daemon, not the discovery worker. Check both `codex --version` and `codex app-server daemon version`: an already-running daemon may still use an older release. If needed, run `codex app-server daemon update --from-cli` once active work is idle; updating can interrupt running work. Both must be 0.164.0 or newer; ideally they are the same release.
 
 ### Install a local checkout
 
@@ -47,7 +51,7 @@ Codex must use its shared daemon. Set `daemon_auto_start = true` in the existing
 
 4. Run ordinary daemon-backed `codex` in a workspace and send its first prompt. Once Codex persists the thread, it appears in Paseo as **Codex Terminal**. An empty start screen is not yet resumable and is not imported.
 
-Discovery starts with the plugin, checks every two seconds after successful passes, and stops when the plugin unloads. Failed passes retry with a delay capped at 30 seconds. It imports threads but does not relay conversation traffic; the provider and shared Codex daemon handle that. Plugin reload and Paseo restart resume discovery automatically. Stop any separately running worker from an older checkout before loading this version; the CLI no longer offers continuous `watch` mode. No service registration or global configuration changes occur during the build or tests.
+Discovery starts with the plugin, checks every two seconds after successful passes, and stops when the plugin unloads. Failed passes retry with a delay capped at 30 seconds. It imports threads but does not relay conversation traffic; the provider and shared Codex daemon handle that. Plugin reload and Paseo restart resume discovery automatically. No service registration or global configuration changes occur during the build or tests.
 
 Each pass also reconciles attached threads' native turn state, repairing missed start or completion events without replaying the full transcript. Native thread-status changes and closure trigger the same check through the existing refresh scheduler. Closing a terminal retains the session; **running** means a native turn is active, not that the terminal remains open. Archive finished sessions in Paseo to remove them from the active list and exclude them from discovery.
 
@@ -97,7 +101,7 @@ After installing the package as a CLI, `paseo-bridge-codex` replaces `node serve
 - **Long histories:** Native history streams in pages of at most 100 items, without a lifetime item/page cutoff or retained full-payload cache in the bridge. Initial import, restart and reconnect preserve complete history. Live updates read dirty turns; question reconciliation and answer admission scan native questions and replies pagewise. Paseo itself retains its timeline in memory; this does not provide lazy mobile history or constant-memory Paseo.
 - **Resources:** Each provider connection allows 128 attachments. Each native history scan has a 60-second deadline, checks attachment cancellation between pages and rejects non-advancing pagination. Exact snapshot deduplication retains IDs and SHA-256 fingerprints, not historical payloads, with a 64 MiB encoded-metadata budget. Fingerprints cannot be evicted safely because Paseo does not preserve identity for every timeline type. Question-scan metadata, hidden-question label keys and updates awaiting manager activation each have an 8 MiB budget. Hidden questions do not consume the 128 visible pending-permission slots. RPC messages and queued writes are bounded at 8 MiB, with 128 pending requests and a 15-second response deadline. Discovery metadata lists remain bounded at 10,000 entries or 200 pages. Resource exhaustion reports an error instead of silently truncating history.
 
-For a missing socket, start normal daemon-backed Codex under the provider's configured `CODEX_HOME`; the bridge never starts a separate execution server. For a version error, align Paseo, the Codex CLI, and the running Codex daemon with the supported release pair. Already-open embedded terminals do not switch to the daemon automatically; finish active work, close them, then resume those conversations through daemon-backed Codex. For a stale or deleted thread, archive its Paseo entry; other discoveries continue despite that attachment's error. Discovery failures appear in Paseo's plugin logs; `once` also reports them directly.
+For a missing socket, start normal daemon-backed Codex under the provider's configured `CODEX_HOME`; the bridge never starts a separate execution server. For a version error, align Paseo, the Codex CLI, and the running Codex daemon with the supported releases. Already-open embedded terminals do not switch to the daemon automatically; finish active work, close them, then resume those conversations through daemon-backed Codex. For a stale or deleted thread, archive its Paseo entry; other discoveries continue despite that attachment's error. Discovery failures appear in Paseo's plugin logs; `once` also reports them directly.
 
 ## Development and evidence
 

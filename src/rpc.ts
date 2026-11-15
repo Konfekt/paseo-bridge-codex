@@ -2,6 +2,7 @@ import { Duplex } from "node:stream";
 import { spawnProcess, terminateProcess } from "@getpaseo/plugin/server";
 import type { ProviderLaunch } from "@getpaseo/plugin/server/provider";
 import WebSocket from "ws";
+import { errorMessage } from "./errors.js";
 
 export interface RpcMessage {
   method: string;
@@ -158,10 +159,14 @@ export async function connectRpc(launch: ProviderLaunch): Promise<RpcClient> {
     fail(new Error(`RPC proxy exited (code ${String(code)}, signal ${String(signal)})`));
   });
 
-  await new Promise<void>((resolve, reject) => {
-    child.once("spawn", resolve);
-    child.once("error", reject);
-  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      child.once("spawn", resolve);
+      child.once("error", reject);
+    });
+  } catch (error) {
+    throw new Error(`Could not start ${launch.command}: ${errorMessage(error)}`, { cause: error });
+  }
 
   const stream = Duplex.from({ readable: child.stdout, writable: child.stdin });
   websocket = new WebSocket("ws://localhost/", {
@@ -183,12 +188,7 @@ export async function connectRpc(launch: ProviderLaunch): Promise<RpcClient> {
           : data;
       receive(frame);
     } catch (error) {
-      abort(
-        new Error(
-          `Invalid RPC proxy output: ${error instanceof Error ? error.message : String(error)}`,
-          { cause: error },
-        ),
-      );
+      abort(new Error(`Invalid RPC proxy output: ${errorMessage(error)}`, { cause: error }));
     }
   });
   socket.on("error", (error: Error) =>
@@ -201,13 +201,21 @@ export async function connectRpc(launch: ProviderLaunch): Promise<RpcClient> {
       ),
     ),
   );
-  await new Promise<void>((resolve, reject) => {
-    socket.once("open", resolve);
-    socket.once("error", reject);
-    socket.once("close", () =>
-      reject(failure ?? new Error("RPC WebSocket closed during handshake")),
+  try {
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve);
+      socket.once("error", reject);
+      socket.once("close", () => reject(new Error("RPC WebSocket closed during handshake")));
+    });
+  } catch (error) {
+    // The proxy usually exits with its reason (for example a missing control socket) on stderr.
+    await close().catch(() => undefined);
+    throw diagnostic(
+      new Error(`Could not connect through the Codex app-server proxy: ${errorMessage(error)}`, {
+        cause: error,
+      }),
     );
-  });
+  }
 
   function write(message: unknown): Promise<void> {
     if (failure) return Promise.reject(failure);

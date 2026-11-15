@@ -14,6 +14,22 @@ const toolStatusSchema = z.enum([
   "cancelled",
   "interrupted",
 ]);
+type ToolCallDetail = Extract<ProviderTimelineItem, { type: "tool_call" }>["detail"];
+
+function toolCall(
+  id: string,
+  name: string,
+  detail: ToolCallDetail,
+  status: z.infer<typeof toolStatusSchema>,
+  failure: z.core.util.JSONType = null,
+): ProviderTimelineItem {
+  const base = { id, type: "tool_call" as const, callId: id, name, detail };
+  if (status === "failed") return { ...base, status: "failed", error: failure };
+  const state =
+    status === "inProgress" ? "running" : status === "completed" ? "completed" : "canceled";
+  return { ...base, status: state, error: null };
+}
+
 /** Project an authoritative native snapshot without retaining execution state. */
 export function projectItem(value: unknown): ProviderTimelineItem {
   const item = itemSchema.parse(value);
@@ -51,15 +67,7 @@ export function projectItem(value: unknown): ProviderTimelineItem {
     case "contextCompaction":
       return { id, type: "compaction", status: "completed" };
     case "plan":
-      return {
-        id,
-        type: "tool_call",
-        callId: id,
-        name: "plan",
-        detail: { type: "plan", text: textSchema.parse(item).text },
-        status: "completed",
-        error: null,
-      };
+      return toolCall(id, "plan", { type: "plan", text: textSchema.parse(item).text }, "completed");
     case "commandExecution": {
       const command = z
         .object({
@@ -70,72 +78,34 @@ export function projectItem(value: unknown): ProviderTimelineItem {
           status: toolStatusSchema,
         })
         .parse(item);
-      const detail = {
-        type: "shell" as const,
-        command: command.command,
-        cwd: command.cwd,
-        output: command.aggregatedOutput ?? "",
-        exitCode: command.exitCode,
-      };
-      if (command.status === "failed")
-        return {
-          id,
-          type: "tool_call",
-          callId: id,
-          name: "commandExecution",
-          detail,
-          status: "failed",
-          error: { exitCode: command.exitCode },
-        };
-      return {
+      return toolCall(
         id,
-        type: "tool_call",
-        callId: id,
-        name: "commandExecution",
-        detail,
-        status:
-          command.status === "inProgress"
-            ? "running"
-            : command.status === "completed"
-              ? "completed"
-              : "canceled",
-        error: null,
-      };
+        "commandExecution",
+        {
+          type: "shell",
+          command: command.command,
+          cwd: command.cwd,
+          output: command.aggregatedOutput ?? "",
+          exitCode: command.exitCode,
+        },
+        command.status,
+        { exitCode: command.exitCode },
+      );
     }
     default: {
       // Paseo inserts startup notifications twice on import; native record cards retain identity.
-      const nativeStatus = item.status;
-      const parsedStatus = toolStatusSchema.safeParse(nativeStatus);
-      const status = parsedStatus.success ? parsedStatus.data : undefined;
-      const detail = {
-        type: "plain_text" as const,
-        label: `Codex native record: ${item.type}`,
-        text: JSON.stringify(item, null, 2),
-      };
-      if (status === "failed")
-        return {
-          id,
-          type: "tool_call",
-          callId: id,
-          name: item.type,
-          detail,
-          status: "failed",
-          error: item,
-        };
-      return {
+      const status = toolStatusSchema.safeParse(item.status);
+      return toolCall(
         id,
-        type: "tool_call",
-        callId: id,
-        name: item.type,
-        detail,
-        status:
-          status === "inProgress"
-            ? "running"
-            : status === undefined || status === "completed"
-              ? "completed"
-              : "canceled",
-        error: null,
-      };
+        item.type,
+        {
+          type: "plain_text",
+          label: `Codex native record: ${item.type}`,
+          text: JSON.stringify(item, null, 2),
+        },
+        status.success ? status.data : "completed",
+        item,
+      );
     }
   }
 }

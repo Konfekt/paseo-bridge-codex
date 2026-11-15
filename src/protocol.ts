@@ -4,7 +4,95 @@ import type { ProviderLaunch, ProviderPersistence } from "@getpaseo/plugin/serve
 import { z } from "zod";
 import type { RpcClient } from "./rpc.js";
 
-export const CODEX_VERSION = "0.164.0";
+/** Oldest Codex release whose app-server contract this bridge supports; older releases are rejected. */
+export const CODEX_MIN_VERSION = "0.164.0";
+/** Newest verified Codex release; patch releases of this minor line count as verified too. */
+export const CODEX_TESTED_VERSION = "0.169.0";
+const CODEX_TESTED_LINE = CODEX_TESTED_VERSION.replace(/\.\d+$/, ".x");
+
+/**
+ * `verified`: within the tested range. `tentative`: newer than the tested range, or a
+ * pre-release at or above the minimum; accepted with a warning. `unsupported`: rejected.
+ */
+export type CodexSupport = "verified" | "tentative" | "unsupported";
+
+interface Release {
+  core: readonly [number, number, number];
+  prerelease: boolean;
+}
+
+function parseRelease(version: string): Release | null {
+  const match = /^(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.exec(version);
+  if (!match) return null;
+  return {
+    core: [Number(match[1]), Number(match[2]), Number(match[3])],
+    prerelease: match[4] !== undefined,
+  };
+}
+
+function compareCores(
+  left: readonly [number, number, number],
+  right: readonly [number, number, number],
+): number {
+  for (let index = 0; index < 3; index++) {
+    const difference = (left[index] ?? 0) - (right[index] ?? 0);
+    if (difference !== 0) return difference;
+  }
+  return 0;
+}
+
+export function codexSupport(version: string): CodexSupport {
+  const release = parseRelease(version);
+  const min = parseRelease(CODEX_MIN_VERSION);
+  const tested = parseRelease(CODEX_TESTED_VERSION);
+  if (!release || !min || !tested) return "unsupported";
+  const versusMin = compareCores(release.core, min.core);
+  // Semver orders a pre-release before its release, so 0.164.0-alpha is below the minimum.
+  if (versusMin < 0 || (versusMin === 0 && release.prerelease)) return "unsupported";
+  if (release.prerelease) return "tentative";
+  const testedLineEnd = [tested.core[0], tested.core[1], Number.MAX_SAFE_INTEGER] as const;
+  return compareCores(release.core, testedLineEnd) <= 0 ? "verified" : "tentative";
+}
+
+export function isSupportedCodexVersion(version: string): boolean {
+  return codexSupport(version) !== "unsupported";
+}
+
+export function codexVersionRequirement(found: string): string {
+  return `Codex ${CODEX_MIN_VERSION} or newer is required; found ${found}`;
+}
+
+export function tentativeCodexWarning(component: string, version: string): string {
+  return `${component} ${version} is newer than the tested Codex range (${CODEX_MIN_VERSION} to ${CODEX_TESTED_LINE}) or a pre-release; continuing tentatively. Report problems and pin a tested release if sessions misbehave.`;
+}
+
+const warnedCodexVersions = new Set<string>();
+
+/** Warn once per component and version, so periodic discovery does not flood the plugin log. */
+export function warnTentativeCodex(
+  component: string,
+  version: string,
+  warn: (message: string) => void = (message) => console.warn(message),
+): string | undefined {
+  if (codexSupport(version) !== "tentative") return undefined;
+  const message = tentativeCodexWarning(component, version);
+  const key = `${component}\u0000${version}`;
+  if (!warnedCodexVersions.has(key)) {
+    warnedCodexVersions.add(key);
+    warn(message);
+  }
+  return message;
+}
+
+/** Extract the release from `codex --version` output, e.g. `codex-cli 0.169.0`. */
+export function cliVersion(output: string): string | null {
+  return /^codex-cli (\S+)$/.exec(output.trim())?.[1] ?? null;
+}
+
+/** Extract the daemon release from its initialize user agent, e.g. `codex_cli_rs/0.169.0 (...)`. */
+export function userAgentVersion(userAgent: string): string | null {
+  return /^[^\s/]+\/(\S+?)(?=$|\s)/.exec(userAgent.trim())?.[1] ?? null;
+}
 const MAX_LIST_ITEMS = 10_000;
 const PAGE_SIZE = 100;
 const MAX_LIST_PAGES = 200;
@@ -16,9 +104,9 @@ export const pointerSchema = z
     data: z.object({ threadId: z.string().min(1).max(200), codexHome: z.string().min(1) }).strict(),
   })
   .strict();
-export const threadStatusSchema = z.object({
-  type: z.enum(["notLoaded", "idle", "systemError", "active"]),
-});
+// Known types: notLoaded, idle, systemError, active. Only "active" is interpreted, so a status
+// type added by a newer Codex must not invalidate thread reads or notifications.
+export const threadStatusSchema = z.object({ type: z.string() });
 export const threadSchema = z.object({
   id: z.string(),
   cwd: z.string(),

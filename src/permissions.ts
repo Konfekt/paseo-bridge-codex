@@ -91,6 +91,15 @@ const questionsSchema = z.object({
     .min(1),
 });
 
+const answersSchema = z.object({ answers: z.record(z.string(), z.string()) });
+
+/** Paseo question answers keyed by question header. */
+export function readAnswers(
+  response: Extract<ProviderPermissionResponse, { behavior: "allow" }>,
+): Record<string, string> {
+  return answersSchema.parse(response.updatedInput).answers;
+}
+
 export function permissionId(id: string | number): string {
   return JSON.stringify(id);
 }
@@ -124,13 +133,14 @@ export function projectPermission(
     };
   }
   if (method === permissionsMethod) {
-    const parsed = profileSchema.parse(params);
+    const parsed = profileSchema.safeParse(params);
+    if (!parsed.success) return undefined;
     return {
       id: permissionId(id),
       name: method,
       kind: "tool",
       title: "Grant requested permissions for this turn",
-      description: JSON.stringify(parsed.permissions, null, 2),
+      description: JSON.stringify(parsed.data.permissions, null, 2),
       actions: [
         { id: "accept", label: "Allow for this turn", behavior: "allow" },
         { id: "decline", label: "Deny", behavior: "deny" },
@@ -138,7 +148,9 @@ export function projectPermission(
     };
   }
   if (method === commandMethod || method === fileMethod) {
-    const approval = approvalSchema.parse(params);
+    const parsed = approvalSchema.safeParse(params);
+    if (!parsed.success) return undefined;
+    const approval = parsed.data;
     const decisions = approval.availableDecisions ?? ["accept", "decline", "cancel"];
     return {
       id: permissionId(id),
@@ -164,7 +176,9 @@ export function projectPermission(
     };
   }
   if (method === questionMethod) {
-    const { questions } = questionsSchema.parse(params);
+    const parsed = questionsSchema.safeParse(params);
+    if (!parsed.success) return undefined;
+    const { questions } = parsed.data;
     // Paseo cannot protect secret answers or distinguish duplicate header keys.
     if (
       questions.some((question) => question.isSecret) ||
@@ -200,9 +214,7 @@ export function permissionResult(
   if (method === elicitationMethod) {
     if (response.behavior === "deny") return { action: "decline", content: null, _meta: null };
     const form = formSchema.parse(params);
-    const answers = z
-      .object({ answers: z.record(z.string(), z.string()) })
-      .parse(response.updatedInput).answers;
+    const answers = readAnswers(response);
     const content: Record<string, string> = Object.create(null);
     for (const [key, field] of Object.entries(form.requestedSchema.properties)) {
       const answer = answers[key];
@@ -238,9 +250,7 @@ export function permissionResult(
   }
   if (method === questionMethod) {
     if (response.behavior === "deny") return { answers: {} };
-    const answers = z
-      .object({ answers: z.record(z.string(), z.string()) })
-      .parse(response.updatedInput).answers;
+    const answers = readAnswers(response);
     const questions = questionsSchema.parse(params).questions;
     const result: Record<string, { answers: string[] }> = Object.create(null);
     for (const question of questions) {
