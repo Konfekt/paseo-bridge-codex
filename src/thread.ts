@@ -7,6 +7,7 @@ import type {
   ProviderTimelineItem,
 } from "@getpaseo/plugin/server/provider";
 import { z } from "zod";
+import { errorMessage } from "./errors.js";
 import { permissionId, permissionResult, projectPermission } from "./permissions.js";
 import {
   type NativeTurn,
@@ -75,6 +76,11 @@ export class AttachedThread {
     private readonly questionVisibility: QuestionVisibility,
   ) {}
 
+  /** Whether this attachment currently holds a live native connection. */
+  get connected(): boolean {
+    return this.rpc !== undefined && !this.closed;
+  }
+
   async hydrate(rpc: RpcClient): Promise<void> {
     this.hydrating = true;
     try {
@@ -96,25 +102,16 @@ export class AttachedThread {
     if (response.thread.canAcceptDirectInput !== true)
       throw new Error("Codex thread does not accept direct input");
     const questions = new AsyncQuestionProjection();
-    for await (const entry of readHistory(
-      rpc,
-      { threadId: this.threadId },
-      () => this.rpc === rpc && !this.closed,
+    for await (const entry of readHistory(rpc, { threadId: this.threadId }, () =>
+      this.isCurrent(rpc),
     )) {
       questions.add(entry.item);
       this.publishChangedSnapshot(entry.item, entry.startedAtMs, publishHistory);
     }
     const revision = this.turnRevision;
-    const turns = z.object({ data: z.array(turnSchema) }).parse(
-      await rpc.request("thread/turns/list", {
-        threadId: this.threadId,
-        limit: 1,
-        sortDirection: "desc",
-        itemsView: "notLoaded",
-      }),
-    );
+    const latest = await this.readLatestTurn(rpc);
     if (this.turnRevision === revision)
-      this.activeTurn = turns.data.find((turn) => turn.status === "inProgress");
+      this.activeTurn = latest?.status === "inProgress" ? latest : undefined;
     this.synchronizeQuestions(questions.pending());
     await this.refresh();
     this.emit({
@@ -161,25 +158,17 @@ export class AttachedThread {
       this.emit({ type: "timeline.item", sessionId: this.sessionId, ...snapshot });
     this.pendingSnapshots.clear();
     this.pendingSnapshotBytes = 0;
-    for (const pending of this.permissions.values())
-      this.emit({
-        type: "session.permission",
-        sessionId: this.sessionId,
-        request: pending.request,
-      });
-    for (const pending of this.questions.values())
-      this.emit({
-        type: "session.permission",
-        sessionId: this.sessionId,
-        request: pending.request,
-      });
+    for (const pending of this.permissions.values()) this.emitPermission(pending.request);
+    for (const pending of this.questions.values()) this.emitPermission(pending.request);
     return true;
   }
 
   accept(message: RpcMessage): void {
     if (this.closed) return;
-    const params = z.record(z.string(), z.unknown()).parse(message.params);
-    if (params["threadId"] !== this.threadId) return;
+    // Messages without object params (or for other threads) are not addressed to this attachment.
+    const parsed = z.record(z.string(), z.unknown()).safeParse(message.params);
+    if (!parsed.success || parsed.data["threadId"] !== this.threadId) return;
+    const params = parsed.data;
     if (message.id !== undefined) {
       const request = projectPermission(message.id, message.method, message.params);
       if (!request) {
@@ -198,18 +187,12 @@ export class AttachedThread {
         params: message.params,
         request,
       });
-      if (this.activated && !this.hydrating)
-        this.emit({ type: "session.permission", sessionId: this.sessionId, request });
+      if (this.activated && !this.hydrating) this.emitPermission(request);
       return;
     }
     if (message.method === "serverRequest/resolved") {
       const id = permissionId(z.union([z.string(), z.number()]).parse(params["requestId"]));
-      if (this.permissions.delete(id) && this.activated)
-        this.emit({
-          type: "session.permission_resolved",
-          sessionId: this.sessionId,
-          permissionId: id,
-        });
+      if (this.permissions.delete(id) && this.activated) this.emitResolved(id);
     } else if (message.method === "turn/started" || message.method === "turn/completed") {
       const turn = turnSchema.parse(params["turn"]);
       this.turnRevision++;
@@ -288,14 +271,11 @@ export class AttachedThread {
           });
       }
       if (prompt) {
-        if (
-          prompt.input.type !== "message" ||
-          prompt.input.content.some((part) => part.type !== "text")
-        )
+        if (prompt.input.type !== "message")
           throw new Error("Codex Terminal accepts text prompts only");
         const content = prompt.input.content.map((part) => {
-          if (part.type !== "text") throw new Error("Expected text content");
-          return { type: "text", text: part.text, text_elements: [] };
+          if (part.type !== "text") throw new Error("Codex Terminal accepts text prompts only");
+          return { type: "text", text: part.text, text_elements: [] as never[] };
         });
         const active = this.activeTurn;
         if (prompt.delivery === "steer" && !active)
@@ -377,12 +357,7 @@ export class AttachedThread {
     try {
       await this.readNativeSnapshot(rpc, wasActive);
       for (const id of oldPermissions)
-        if (!this.permissions.has(id) && !this.questions.has(id))
-          this.emit({
-            type: "session.permission_resolved",
-            sessionId: this.sessionId,
-            permissionId: id,
-          });
+        if (!this.permissions.has(id) && !this.questions.has(id)) this.emitResolved(id);
       const completed = await this.reconcileTurn(rpc, oldTurnId);
       if (wasActive && completed) this.emitTurn(completed);
       this.hydrating = false;
@@ -402,13 +377,17 @@ export class AttachedThread {
     this.timer = undefined;
     const rpc = this.rpc;
     this.rpc = undefined;
-    if (rpc) await rpc.request("thread/unsubscribe", { threadId: this.threadId });
     this.permissions.clear();
     this.questions.clear();
     this.fingerprints.clear();
     this.fingerprintBytes = 0;
     this.pendingSnapshots.clear();
     this.pendingSnapshotBytes = 0;
+    // Unsubscribing is best-effort: the local attachment is released even if Codex is unreachable.
+    if (rpc)
+      await rpc.request("thread/unsubscribe", { threadId: this.threadId }).catch((error) => {
+        console.warn(`Codex thread ${this.threadId} unsubscribe failed:`, errorMessage(error));
+      });
   }
 
   private emitTurn(turn: NativeTurn): void {
@@ -433,6 +412,14 @@ export class AttachedThread {
       state,
       ...(turn.error ? { error: { message: turn.error.message } } : {}),
     });
+  }
+
+  private emitPermission(request: ProviderPermissionRequest): void {
+    this.emit({ type: "session.permission", sessionId: this.sessionId, request });
+  }
+
+  private emitResolved(permissionId: string): void {
+    this.emit({ type: "session.permission_resolved", sessionId: this.sessionId, permissionId });
   }
 
   private notice(id: string, severity: "warning" | "info", description: string): void {
@@ -478,10 +465,8 @@ export class AttachedThread {
       try {
         let questionsChanged = false;
         for (const turnId of turns) {
-          for await (const entry of readHistory(
-            rpc,
-            { threadId: this.threadId, turnId },
-            () => this.rpc === rpc && !this.closed,
+          for await (const entry of readHistory(rpc, { threadId: this.threadId, turnId }, () =>
+            this.isCurrent(rpc),
           )) {
             const snapshot = this.publishChangedSnapshot(
               entry.item,
@@ -499,7 +484,7 @@ export class AttachedThread {
         if (questionsChanged) {
           const questionRevision = this.questionRevision;
           const questions = await this.readQuestions(rpc);
-          if (this.rpc !== rpc || this.closed) return;
+          if (!this.isCurrent(rpc)) return;
           if (this.questionRevision === questionRevision) this.synchronizeQuestions(questions);
         }
       } catch (error) {
@@ -517,11 +502,7 @@ export class AttachedThread {
     try {
       await work;
     } catch (error) {
-      this.notice(
-        "snapshot",
-        "warning",
-        `Codex synchronization failed: ${error instanceof Error ? error.message : String(error)}`,
-      );
+      this.notice("snapshot", "warning", `Codex synchronization failed: ${errorMessage(error)}`);
       throw error;
     } finally {
       this.refreshing = undefined;
@@ -538,28 +519,16 @@ export class AttachedThread {
       .object({ thread: threadSchema })
       .parse(await rpc.request("thread/read", { threadId: this.threadId, includeTurns: false }));
     if (thread.id !== this.threadId) throw new Error("Codex read a different thread");
-    const { data } = z.object({ data: z.array(turnSchema) }).parse(
-      await rpc.request("thread/turns/list", {
-        threadId: this.threadId,
-        limit: 1,
-        sortDirection: "desc",
-        itemsView: "notLoaded",
-      }),
-    );
-    const latest = data[0];
+    const latest = await this.readLatestTurn(rpc);
     let previous = latest?.id === previousTurnId ? latest : undefined;
     if (previousTurnId && !previous) {
-      for await (const turn of readTurns(
-        rpc,
-        this.threadId,
-        () => this.rpc === rpc && !this.closed,
-      )) {
+      for await (const turn of readTurns(rpc, this.threadId, () => this.isCurrent(rpc))) {
         if (turn.id !== previousTurnId) continue;
         previous = turn;
         break;
       }
     }
-    if (this.rpc !== rpc || this.closed) return;
+    if (!this.isCurrent(rpc)) return;
     const completed = previous?.status === "inProgress" ? undefined : previous;
     // A later notification invalidates the current-state read, not an older turn's
     // terminal history needed to settle the pre-disconnect Paseo turn.
@@ -582,12 +551,26 @@ export class AttachedThread {
     return completed;
   }
 
+  private isCurrent(rpc: RpcClient): boolean {
+    return this.rpc === rpc && !this.closed;
+  }
+
+  private async readLatestTurn(rpc: RpcClient): Promise<NativeTurn | undefined> {
+    const { data } = z.object({ data: z.array(turnSchema) }).parse(
+      await rpc.request("thread/turns/list", {
+        threadId: this.threadId,
+        limit: 1,
+        sortDirection: "desc",
+        itemsView: "notLoaded",
+      }),
+    );
+    return data[0];
+  }
+
   private async readQuestions(rpc: RpcClient): Promise<Map<string, AsyncQuestion>> {
     const questions = new AsyncQuestionProjection();
-    for await (const entry of readHistory(
-      rpc,
-      { threadId: this.threadId },
-      () => this.rpc === rpc && !this.closed,
+    for await (const entry of readHistory(rpc, { threadId: this.threadId }, () =>
+      this.isCurrent(rpc),
     ))
       questions.add(entry.item);
     return questions.pending();
@@ -603,20 +586,10 @@ export class AttachedThread {
     // Even an unchanged result supersedes older in-flight history reads.
     this.questionRevision++;
     if (this.activated && !this.hydrating) {
-      for (const id of this.questions.keys())
-        if (!pending.has(id))
-          this.emit({
-            type: "session.permission_resolved",
-            sessionId: this.sessionId,
-            permissionId: id,
-          });
+      for (const id of this.questions.keys()) if (!pending.has(id)) this.emitResolved(id);
       for (const [id, question] of pending)
         if (JSON.stringify(question) !== JSON.stringify(this.questions.get(id)))
-          this.emit({
-            type: "session.permission",
-            sessionId: this.sessionId,
-            request: question.request,
-          });
+          this.emitPermission(question.request);
     }
     this.questions = pending;
   }

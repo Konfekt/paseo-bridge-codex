@@ -104,9 +104,9 @@ export const pointerSchema = z
     data: z.object({ threadId: z.string().min(1).max(200), codexHome: z.string().min(1) }).strict(),
   })
   .strict();
-export const threadStatusSchema = z.object({
-  type: z.enum(["notLoaded", "idle", "systemError", "active"]),
-});
+// Known types: notLoaded, idle, systemError, active. Only "active" is interpreted, so a status
+// type added by a newer Codex must not invalidate thread reads or notifications.
+export const threadStatusSchema = z.object({ type: z.string() });
 export const threadSchema = z.object({
   id: z.string(),
   cwd: z.string(),

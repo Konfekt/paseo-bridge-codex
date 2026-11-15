@@ -1221,6 +1221,175 @@ describe("shared-thread provider", () => {
     }
   });
 
+  it("reconnects healthy attachments when another thread cannot be resumed", async () => {
+    const healthyOpen = {
+      ...open,
+      requestId: "open-healthy",
+      sessionId: "healthy-session",
+      persistence: { version: 1, data: { threadId: "healthy-thread", codexHome } },
+      config: { ...open.config, env: { [AGENT_ID_ENV]: "healthy-agent" } },
+    } satisfies typeof open;
+    const daemonFor = (resumeFails: boolean) => {
+      const daemon = new NativeDaemon();
+      const original = daemon.request.bind(daemon);
+      daemon.request = async (method, params) => {
+        const requestedId = (params as { threadId?: string }).threadId;
+        if (method === "thread/resume" && resumeFails && requestedId === threadId)
+          throw new Error("RPC error -32600: no rollout found");
+        if (method === "thread/resume" || method === "thread/read")
+          return { thread: { ...nativeThread, id: requestedId } };
+        return original(method, params);
+      };
+      return daemon;
+    };
+    const first = daemonFor(false);
+    const recovered = daemonFor(true);
+    const factory = vi.fn(async () => (factory.mock.calls.length === 1 ? first : recovered));
+    const bridge = createBridgeProvider(async () => "native-turn", visibleQuestions, factory);
+    const connection = await bridge.registration.connect({
+      versions: [1],
+      capabilities: [...CAPABILITIES],
+      launch,
+    });
+    const events: ProviderEvent[] = [];
+    connection.onEvent((event) => events.push(event));
+    const recoveredClose = vi.spyOn(recovered, "close");
+    try {
+      await connection.send(open);
+      await bridge.activate("agent-1");
+      await connection.send(healthyOpen);
+      await bridge.activate("healthy-agent");
+      await first.close();
+      await vi.waitFor(
+        () =>
+          expect(events).toContainEqual({
+            type: "session.notice",
+            sessionId: "healthy-session",
+            notice: expect.objectContaining({ description: "Codex connection restored." }),
+          }),
+        { timeout: 5000 },
+      );
+      expect(recoveredClose).not.toHaveBeenCalled();
+      await connection.send({
+        type: "session.prompt",
+        sessionId: "healthy-session",
+        prompt: {
+          clientMessageId: "after-reconnect",
+          delivery: "steer",
+          input: { type: "message", content: [{ type: "text", text: "Continue" }] },
+        },
+      });
+      expect(events).toContainEqual({
+        type: "session.prompt_result",
+        sessionId: "healthy-session",
+        clientMessageId: "after-reconnect",
+        result: { type: "steer", turnId: "native-turn" },
+      });
+      expect(events).toContainEqual({
+        type: "session.notice",
+        sessionId: open.sessionId,
+        notice: expect.objectContaining({
+          description: expect.stringContaining("no rollout found"),
+        }),
+      });
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("tolerates unaddressed, unknown and malformed native messages without dropping the proxy", async () => {
+    const daemon = new NativeDaemon();
+    const close = vi.spyOn(daemon, "close");
+    const bridge = createBridgeProvider(
+      async () => "native-turn",
+      visibleQuestions,
+      async () => daemon,
+    );
+    const connection = await bridge.registration.connect({
+      versions: [1],
+      capabilities: [...CAPABILITIES],
+      launch,
+    });
+    const events: ProviderEvent[] = [];
+    connection.onEvent((event) => events.push(event));
+    try {
+      await connection.send(open);
+      await bridge.activate("agent-1");
+      // A global notification without params, a status type from a newer Codex, and an
+      // approval whose shape this bridge does not understand.
+      daemon.emit("account/updated", undefined);
+      daemon.emit("thread/status/changed", { threadId, status: { type: "suspended" } });
+      daemon.emit(
+        "item/commandExecution/requestApproval",
+        { threadId, turnId: "native-turn", availableDecisions: "accept" },
+        "odd-approval",
+      );
+      expect(close).not.toHaveBeenCalled();
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: "session.notice",
+          notice: expect.objectContaining({ id: "terminal-request" }),
+        }),
+      );
+      await connection.send({
+        type: "session.prompt",
+        sessionId: open.sessionId,
+        prompt: {
+          clientMessageId: "still-attached",
+          delivery: "steer",
+          input: { type: "message", content: [{ type: "text", text: "Continue" }] },
+        },
+      });
+      expect(events).toContainEqual({
+        type: "session.prompt_result",
+        sessionId: open.sessionId,
+        clientMessageId: "still-attached",
+        result: { type: "steer", turnId: "native-turn" },
+      });
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("closes a session even when Codex rejects the unsubscribe", async () => {
+    const daemon = new NativeDaemon();
+    const original = daemon.request.bind(daemon);
+    daemon.request = async (method, params) => {
+      if (method === "thread/unsubscribe") throw new Error("RPC error -32600: thread not loaded");
+      return original(method, params);
+    };
+    const bridge = createBridgeProvider(
+      async () => "native-turn",
+      visibleQuestions,
+      async () => daemon,
+    );
+    const connection = await bridge.registration.connect({
+      versions: [1],
+      capabilities: [...CAPABILITIES],
+      launch,
+    });
+    const events: ProviderEvent[] = [];
+    connection.onEvent((event) => events.push(event));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      await connection.send(open);
+      await connection.send({
+        type: "session.close",
+        requestId: "close",
+        sessionId: open.sessionId,
+      });
+      expect(events).toContainEqual({ type: "session.closed", sessionId: open.sessionId });
+      expect(events).toContainEqual({ type: "request.completed", requestId: "close" });
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("unsubscribe failed"),
+        "RPC error -32600: thread not loaded",
+      );
+    } finally {
+      warn.mockRestore();
+      await connection.close();
+    }
+  });
+
   it("recovers snapshot failures through a new proxy without replaying mutations", async () => {
     const first = new NativeDaemon();
     const recovered = new NativeDaemon();

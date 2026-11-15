@@ -18,7 +18,7 @@
   ],
   "scripts": {
     "format": "biome check --write .",
-    "lint": "biome check .",
+    "lint": "biome check --error-on-warnings .",
     "typecheck": "pnpm build && tsc --noEmit",
     "test": "vitest run",
     "build": "tsc -p tsconfig.build.json",

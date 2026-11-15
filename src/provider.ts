@@ -10,6 +10,8 @@ import {
   requireProviderCapabilities,
 } from "@getpaseo/plugin/server/provider";
 import { z } from "zod";
+import { errorMessage } from "./errors.js";
+import { PROVIDER_ID } from "./ids.js";
 import {
   CODEX_MIN_VERSION,
   cliVersion,
@@ -26,7 +28,7 @@ import type { QuestionVisibility } from "./questions.js";
 import { connectRpc, type RpcClient } from "./rpc.js";
 import { AttachedThread } from "./thread.js";
 
-export const PROVIDER_ID = "codex-terminal";
+export { PROVIDER_ID };
 export const AGENT_ID_ENV = "PASEO_BRIDGE_CODEX_AGENT_ID";
 export const CAPABILITIES = [
   "prompt.message",
@@ -72,7 +74,7 @@ export function createBridgeProvider(
           const warning = warnTentativeCodex("Codex CLI", version);
           return warning ? { available: true, diagnostic: warning } : { available: true };
         } catch (error) {
-          return { available: false, diagnostic: message(error) };
+          return { available: false, diagnostic: errorMessage(error) };
         }
       },
       async connect(request) {
@@ -125,20 +127,34 @@ function connection(
     reconnectTimer = setTimeout(() => {
       reconnectTimer = undefined;
       void (async () => {
+        let client: RpcClient;
         try {
-          const client = await getRpc();
-          for (const thread of sessions.values()) await thread.reattach(client);
-          retryDelayMs = RECONNECT_DELAY_MS;
+          client = await getRpc();
         } catch (error) {
-          const failed = rpc;
-          rpc = undefined;
-          if (failed) await failed.close();
-          for (const thread of sessions.values()) thread.disconnect(new Error(message(error)));
-          retryDelayMs = Math.min(retryDelayMs * 2, MAX_RECONNECT_DELAY_MS);
-          scheduleReconnect();
+          for (const thread of sessions.values()) thread.disconnect(new Error(errorMessage(error)));
+          retryLater();
+          return;
         }
+        // One unresumable thread must not tear down the shared proxy for healthy attachments.
+        let failed = false;
+        for (const thread of [...sessions.values()]) {
+          if (thread.connected || !sessions.has(thread.sessionId)) continue;
+          try {
+            await thread.reattach(client);
+          } catch (error) {
+            failed = true;
+            thread.disconnect(new Error(errorMessage(error)));
+          }
+        }
+        if (failed) retryLater();
+        else retryDelayMs = RECONNECT_DELAY_MS;
       })();
     }, retryDelayMs);
+  }
+
+  function retryLater(): void {
+    retryDelayMs = Math.min(retryDelayMs * 2, MAX_RECONNECT_DELAY_MS);
+    scheduleReconnect();
   }
 
   async function getRpc(): Promise<RpcClient> {
@@ -161,7 +177,7 @@ function connection(
           for (const thread of sessions.values()) thread.accept(event);
         } catch (error) {
           for (const thread of sessions.values())
-            thread.disconnect(new Error(`Invalid Codex event: ${message(error)}`));
+            thread.disconnect(new Error(`Invalid Codex event: ${errorMessage(error)}`));
           void client.close();
         }
       });
@@ -335,14 +351,14 @@ function connection(
           emit({
             type: "request.failed",
             requestId: input.requestId,
-            error: { message: message(error) },
+            error: { message: errorMessage(error) },
           });
         else if (input.type === "session.prompt")
           emit({
             type: "session.prompt_result",
             sessionId: input.sessionId,
             clientMessageId: input.prompt.clientMessageId,
-            result: { type: "failed", error: { message: message(error) } },
+            result: { type: "failed", error: { message: errorMessage(error) } },
           });
         else throw error;
       }
@@ -362,8 +378,4 @@ function connection(
       listeners.clear();
     },
   };
-}
-
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

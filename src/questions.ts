@@ -4,6 +4,7 @@ import type {
   ProviderPermissionResponse,
 } from "@getpaseo/plugin/server/provider";
 import { z } from "zod";
+import { readAnswers } from "./permissions.js";
 
 const replyOpen = "<send_user_message_question_reply>";
 const replyClose = "</send_user_message_question_reply>";
@@ -165,9 +166,7 @@ export function asyncQuestionReply(
   question: AsyncQuestion,
   response: Extract<ProviderPermissionResponse, { behavior: "allow" }>,
 ): string {
-  const { answers } = z
-    .object({ answers: z.record(z.string(), z.string()) })
-    .parse(response.updatedInput);
+  const answers = readAnswers(response);
   const replies = question.questions.map((entry) => {
     const answer = answers[`Question ${entry.index + 1}`]?.trim();
     if (!answer) throw new Error(`Answer Question ${entry.index + 1} before submitting`);

@@ -156,3 +156,66 @@ test("a deleted attachment reports its failure without starving new terminal thr
     expect((failure as AggregateError).errors[0].cause).toBe(deleted);
   }
 });
+
+test("a failed import reconciliation does not abort imports of later sessions", async () => {
+  const imports: string[] = [];
+  let agentReads = 0;
+  const client: DiscoveryClient = {
+    sessions: async () =>
+      ["broken", "healthy"].map((providerHandleId) => ({
+        providerId: "codex-terminal",
+        providerHandleId,
+        cwd: "/work",
+      })),
+    agents: async () => {
+      // The first read builds the pass; the reconciliation read after the failed import fails too.
+      if (agentReads++ === 1) throw new Error("directory unavailable");
+      return [];
+    },
+    importSession: async (session) => {
+      imports.push(session.providerHandleId);
+      if (session.providerHandleId === "broken") throw new Error("import rejected");
+      return {
+        id: "healthy-agent",
+        provider: session.providerId,
+        persistence: { sessionId: session.providerHandleId },
+      };
+    },
+    load: async () => {},
+    activate: async () => {},
+  };
+  const failure = await discoverOnce(client).catch((error: unknown) => error);
+  expect(imports).toEqual(["broken", "healthy"]);
+  expect(failure).toBeInstanceOf(AggregateError);
+  expect((failure as AggregateError).message).toContain("Session broken: import rejected");
+});
+
+test("watch keeps polling when closing a pass connection fails", async () => {
+  const controller = new AbortController();
+  const errors: unknown[] = [];
+  let connections = 0;
+  await watchDiscovery(
+    async () => {
+      connections++;
+      return {
+        close: async () => {
+          if (connections === 1) throw new Error("close failed");
+          controller.abort();
+        },
+        discovery: {
+          sessions: async () => [],
+          agents: async () => [],
+          importSession: async () => {
+            throw new Error("unexpected import");
+          },
+          load: async () => {},
+          activate: async () => {},
+        },
+      };
+    },
+    controller.signal,
+    (error) => errors.push(error),
+  );
+  expect(connections).toBe(2);
+  expect(errors).toEqual([new Error("close failed")]);
+}, 10_000);

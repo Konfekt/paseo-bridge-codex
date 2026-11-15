@@ -3,6 +3,10 @@ import { Duplex } from "node:stream";
 import { WebSocketServer } from "ws";
 
 const mode = process.argv[2];
+if (mode === "no-socket") {
+  process.stderr.write("Error: failed to connect to socket at /missing/control.sock\n");
+  process.exit(1);
+}
 const server = createServer();
 const websocketServer = new WebSocketServer({ noServer: true, perMessageDeflate: false });
 const stream = Duplex.from({ readable: process.stdin, writable: process.stdout });
