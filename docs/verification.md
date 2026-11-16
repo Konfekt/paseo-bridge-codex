@@ -4,12 +4,12 @@ This file describes what the automated checks cover for the current dependency s
 
 ## Supported versions
 
-| Component                   | Verified                                              | Accepted                                                                                                   | Rejected                                        |
-| --------------------------- | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
-| Codex CLI and shared daemon | 0.164.0 – 0.169.x (the contract test runs on 0.169.0) | Newer releases and pre-releases above 0.164.0, with a one-time warning per component and version           | Below 0.164.0, and 0.164.0 pre-releases         |
-| Paseo host                  | 0.15.4 (locked helper and host version) and 0.14.0    | Any version matching `>=0.14.0`, including pre-releases, because Paseo also checks the stable core version | Below 0.14.0 (Paseo refuses to load the plugin) |
+| Component                   | Verified                                              | Accepted                                                                                                                                                                  | Rejected                                        |
+| --------------------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| Codex CLI and shared daemon | 0.164.0 – 0.169.x (the contract test runs on 0.169.0) | Newer releases and pre-releases above 0.164.0, with a one-time warning per component and version                                                                          | Below 0.164.0, and 0.164.0 pre-releases         |
+| Paseo host                  | 0.15.4 (locked helper and host version) and 0.14.0    | Any version matching `>=0.14.0`, including pre-releases, because Paseo also checks the stable core version; versions above 0.15.x and pre-releases log a one-time warning | Below 0.14.0 (Paseo refuses to load the plugin) |
 
-`src/protocol.ts` holds the Codex policy (`CODEX_MIN_VERSION`, `CODEX_TESTED_VERSION`). `paseo-plugin.json` holds the Paseo requirement. The `@getpaseo/*` runtime helpers and the `@openai/codex` devDependency are pinned in `package.json` and the lockfile.
+`src/protocol.ts` holds the version policy (`CODEX_MIN_VERSION`, `CODEX_TESTED_VERSION`, `PASEO_MIN_VERSION`, `PASEO_TESTED_VERSION`). `paseo-plugin.json` holds the Paseo requirement that Paseo enforces itself. `tests/version.test.ts` checks that these constants match the manifest and the pinned packages. The `@getpaseo/*` runtime helpers and the `@openai/codex` devDependency are pinned in `package.json` and the lockfile.
 
 ### Codex 0.169.x compared with the minimum
 
@@ -43,7 +43,8 @@ What tends to break, and how it shows:
 For a new **Paseo** release:
 1. Bump the four `@getpaseo/*` dependencies together and run `pnpm install`.
 2. Run `pnpm verify`. The host test starts the locked server version, so the plugin requirement check, provider registration, `agent.session_open` hook, reverse RPC, import, restart, disable/enable and reload are all exercised.
-3. `src/paseo-client.ts` imports three server modules by path (home, pid lock, local credential), because Paseo's `daemon-control` export does not survive the CommonJS plugin bundler. Check those paths still exist after a bump.
+3. If everything passes, raise `PASEO_TESTED_VERSION`. Until then, discovery logs the tentative-version warning for that host.
+4. `src/paseo-client.ts` imports three server modules by path (home, pid lock, local credential), because Paseo's `daemon-control` export does not survive the CommonJS plugin bundler. Check those paths still exist after a bump.
 
 ## What the tests cover
 

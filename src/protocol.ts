@@ -41,17 +41,22 @@ function compareCores(
   return 0;
 }
 
-export function codexSupport(version: string): CodexSupport {
+/** Classify `version` against an inclusive minimum and a tested minor line. */
+function releaseSupport(version: string, minimum: string, tested: string): CodexSupport {
   const release = parseRelease(version);
-  const min = parseRelease(CODEX_MIN_VERSION);
-  const tested = parseRelease(CODEX_TESTED_VERSION);
-  if (!release || !min || !tested) return "unsupported";
+  const min = parseRelease(minimum);
+  const top = parseRelease(tested);
+  if (!release || !min || !top) return "unsupported";
   const versusMin = compareCores(release.core, min.core);
   // Semver orders a pre-release before its release, so 0.164.0-alpha is below the minimum.
   if (versusMin < 0 || (versusMin === 0 && release.prerelease)) return "unsupported";
   if (release.prerelease) return "tentative";
-  const testedLineEnd = [tested.core[0], tested.core[1], Number.MAX_SAFE_INTEGER] as const;
+  const testedLineEnd = [top.core[0], top.core[1], Number.MAX_SAFE_INTEGER] as const;
   return compareCores(release.core, testedLineEnd) <= 0 ? "verified" : "tentative";
+}
+
+export function codexSupport(version: string): CodexSupport {
+  return releaseSupport(version, CODEX_MIN_VERSION, CODEX_TESTED_VERSION);
 }
 
 export function isSupportedCodexVersion(version: string): boolean {
@@ -59,34 +64,73 @@ export function isSupportedCodexVersion(version: string): boolean {
 }
 
 export function codexVersionRequirement(found: string): string {
-  return `Codex ${CODEX_MIN_VERSION} or newer is required; found ${found}`;
+  return `Codex ${CODEX_MIN_VERSION} or newer is required; found ${found || "no version output"}`;
+}
+
+function tentativeReason(version: string, range: string): string {
+  return parseRelease(version)?.prerelease
+    ? `is a pre-release (tested range ${range})`
+    : `is newer than the tested range (${range})`;
 }
 
 export function tentativeCodexWarning(component: string, version: string): string {
-  return `${component} ${version} is newer than the tested Codex range (${CODEX_MIN_VERSION} to ${CODEX_TESTED_LINE}) or a pre-release; continuing tentatively. Report problems and pin a tested release if sessions misbehave.`;
+  return `${component} ${version} ${tentativeReason(version, `${CODEX_MIN_VERSION} to ${CODEX_TESTED_LINE}`)}; continuing tentatively. Report problems and pin a tested release if sessions misbehave.`;
 }
 
-const warnedCodexVersions = new Set<string>();
+const warnedVersions = new Set<string>();
 
 /** Warn once per component and version, so periodic discovery does not flood the plugin log. */
+function warnOnce(
+  component: string,
+  version: string,
+  message: string,
+  warn: (message: string) => void,
+): string {
+  const key = `${component}\u0000${version}`;
+  if (!warnedVersions.has(key)) {
+    warnedVersions.add(key);
+    warn(message);
+  }
+  return message;
+}
+
 export function warnTentativeCodex(
   component: string,
   version: string,
   warn: (message: string) => void = (message) => console.warn(message),
 ): string | undefined {
   if (codexSupport(version) !== "tentative") return undefined;
-  const message = tentativeCodexWarning(component, version);
-  const key = `${component}\u0000${version}`;
-  if (!warnedCodexVersions.has(key)) {
-    warnedCodexVersions.add(key);
-    warn(message);
-  }
-  return message;
+  return warnOnce(component, version, tentativeCodexWarning(component, version), warn);
+}
+
+/** Oldest Paseo host the manifest admits (`paseo-plugin.json`). */
+export const PASEO_MIN_VERSION = "0.14.0";
+/** Newest verified Paseo host; patch releases of this minor line count as verified too. */
+export const PASEO_TESTED_VERSION = "0.15.4";
+
+/**
+ * Paseo itself enforces the manifest minimum, so only newer or pre-release hosts matter here.
+ * An unknown host version (older hosts may omit it) is not warned about.
+ */
+export function warnTentativePaseo(
+  version: string | null | undefined,
+  warn: (message: string) => void = (message) => console.warn(message),
+): string | undefined {
+  if (!version || releaseSupport(version, PASEO_MIN_VERSION, PASEO_TESTED_VERSION) !== "tentative")
+    return undefined;
+  const range = `${PASEO_MIN_VERSION} to ${PASEO_TESTED_VERSION.replace(/\.\d+$/, ".x")}`;
+  return warnOnce(
+    "Paseo host",
+    version,
+    `Paseo host ${version} ${tentativeReason(version, range)}; continuing tentatively. Report problems and pin a tested release if discovery or attachments misbehave.`,
+    warn,
+  );
 }
 
 /** Extract the release from `codex --version` output, e.g. `codex-cli 0.169.0`. */
 export function cliVersion(output: string): string | null {
-  return /^codex-cli (\S+)$/.exec(output.trim())?.[1] ?? null;
+  // Tolerate notices printed around the version line, e.g. update hints.
+  return /^codex(?:-cli)? v?(\d\S*)[^\S\n]*$/m.exec(output)?.[1] ?? null;
 }
 
 /** Extract the daemon release from its initialize user agent, e.g. `codex_cli_rs/0.169.0 (...)`. */

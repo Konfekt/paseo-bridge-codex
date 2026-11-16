@@ -254,7 +254,8 @@ function connection(
         )
           continue;
         if (input.cwd && input.cwd !== thread.cwd) continue;
-        const title = thread.name ?? thread.preview ?? thread.id;
+        // Unnamed threads carry an empty name or preview; fall back to the ID instead of a blank title.
+        const title = thread.name || thread.preview || thread.id;
         if (
           input.query &&
           !`${title} ${thread.cwd}`.toLowerCase().includes(input.query.toLowerCase())
