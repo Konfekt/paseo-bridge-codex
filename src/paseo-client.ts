@@ -10,6 +10,7 @@ import {
 } from "../node_modules/@getpaseo/server/dist/server/server/pid-lock.js";
 import type { AttachedAgent, DiscoveryClient } from "./discovery.js";
 import { PLUGIN_ID, PROVIDER_ID } from "./ids.js";
+import { warnTentativePaseo } from "./protocol.js";
 
 const DIRECTORY_PAGE_SIZE = 200;
 const MAX_DIRECTORY_PAGES = 100;
@@ -50,6 +51,7 @@ export async function connectPaseoHost(
   try {
     await client.connect();
     signal?.throwIfAborted();
+    warnTentativePaseo(client.getLastServerInfoMessage()?.version);
     return {
       client,
       close,

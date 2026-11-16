@@ -1619,6 +1619,39 @@ describe("shared-thread provider", () => {
     }
   });
 
+  it("titles unnamed threads with their preview, or their ID when the preview is empty", async () => {
+    const titles = async (thread: Record<string, unknown>) => {
+      const daemon = new NativeDaemon();
+      const original = daemon.request.bind(daemon);
+      daemon.request = async (method, params) => {
+        if (method === "thread/list") return { data: [thread], nextCursor: null };
+        if (method === "thread/read") return { thread };
+        return original(method, params);
+      };
+      const bridge = createBridgeProvider(
+        async () => null,
+        visibleQuestions,
+        async () => daemon,
+      );
+      const connection = await bridge.registration.connect({
+        versions: [1],
+        capabilities: [...CAPABILITIES],
+        launch,
+      });
+      const events: ProviderEvent[] = [];
+      connection.onEvent((event) => events.push(event));
+      try {
+        await connection.send({ type: "sessions", requestId: "list" });
+        const result = events.find((event) => event.type === "sessions");
+        return result?.sessions.map((session) => session.title);
+      } finally {
+        await connection.close();
+      }
+    };
+    expect(await titles({ ...nativeThread, name: null })).toEqual(["hello"]);
+    expect(await titles({ ...nativeThread, name: "", preview: "" })).toEqual([threadId]);
+  });
+
   it("lists terminal threads from verified and newer Codex daemons and rejects older releases", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const listWith = async (userAgent: string) => {
@@ -1661,10 +1694,10 @@ describe("shared-thread provider", () => {
       expect(result?.sessions.map((session) => session.persistence)).toEqual([open.persistence]);
     }
     expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining("Shared Codex daemon 0.170.0 is newer than the tested Codex range"),
+      expect.stringContaining("Shared Codex daemon 0.170.0 is newer than the tested range"),
     );
     expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining("Shared Codex daemon 0.171.0-alpha.5 is newer"),
+      expect.stringContaining("Shared Codex daemon 0.171.0-alpha.5 is a pre-release"),
     );
     expect(warn).not.toHaveBeenCalledWith(expect.stringContaining("0.169.0"));
     for (const userAgent of [
@@ -1693,6 +1726,16 @@ describe("shared-thread provider", () => {
       expect(tentative).toMatchObject({ available: true });
       expect(tentative?.diagnostic).toContain("Codex CLI 0.173.0 is newer than the tested");
       expect(warn).toHaveBeenCalledTimes(1);
+      const noisy = join(directory, "codex-noisy");
+      await writeFile(
+        noisy,
+        '#!/bin/sh\necho "Update available: 0.174.0"\necho "codex-cli 0.169.2"\n',
+      );
+      await chmod(noisy, 0o755);
+      const bridge = createBridgeProvider(async () => null, visibleQuestions);
+      expect(
+        await bridge.registration.status?.({ launch: { command: noisy, args: [], env: {} } }),
+      ).toEqual({ available: true });
       expect(await statusFor("0.163.0")).toEqual({
         available: false,
         diagnostic: "Codex 0.164.0 or newer is required; found codex-cli 0.163.0",
