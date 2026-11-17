@@ -25,6 +25,7 @@ test("imports each missing terminal once, preserves archives and loads existing 
     activated: string[] = [],
     imported: string[] = [];
   const client: DiscoveryClient = {
+    warmProvider: async () => {},
     sessions: async () => available,
     agents: async () => [...agents],
     importSession: async (session) => {
@@ -56,6 +57,7 @@ test("reconciles an import whose response was lost without retrying the mutation
   const activated: string[] = [];
   let imports = 0;
   const client: DiscoveryClient = {
+    warmProvider: async () => {},
     sessions: async () => [
       { providerId: "codex-terminal", providerHandleId: "opaque", cwd: "/work" },
     ],
@@ -91,6 +93,7 @@ test("watch cancellation closes the owned client and prevents another pass", asy
           closed++;
         },
         discovery: {
+          warmProvider: async () => {},
           sessions: async () => {
             controller.abort();
             return [];
@@ -119,6 +122,7 @@ test("a deleted attachment reports its failure without starving new terminal thr
   const imports: string[] = [];
   const activations: string[] = [];
   const client: DiscoveryClient = {
+    warmProvider: async () => {},
     sessions: async () => [{ providerId: "codex-terminal", providerHandleId: "new", cwd: "/work" }],
     agents: async () => [...agents],
     importSession: async (session) => {
@@ -161,6 +165,7 @@ test("a failed import reconciliation does not abort imports of later sessions", 
   const imports: string[] = [];
   let agentReads = 0;
   const client: DiscoveryClient = {
+    warmProvider: async () => {},
     sessions: async () =>
       ["broken", "healthy"].map((providerHandleId) => ({
         providerId: "codex-terminal",
@@ -203,6 +208,7 @@ test("watch keeps polling when closing a pass connection fails", async () => {
           controller.abort();
         },
         discovery: {
+          warmProvider: async () => {},
           sessions: async () => [],
           agents: async () => [],
           importSession: async () => {
@@ -219,3 +225,42 @@ test("watch keeps polling when closing a pass connection fails", async () => {
   expect(connections).toBe(2);
   expect(errors).toEqual([new Error("close failed")]);
 }, 10_000);
+
+test("warms the provider before listing so a cold Paseo host still lists terminal threads", async () => {
+  const calls: string[] = [];
+  let warmed = false;
+  const client: DiscoveryClient = {
+    warmProvider: async () => {
+      calls.push("warm");
+      warmed = true;
+    },
+    // Paseo omits a plugin provider from session listing until its runtime connects.
+    sessions: async () => {
+      calls.push("sessions");
+      return warmed ? [{ providerId: "codex-terminal", providerHandleId: "cold", cwd: "/w" }] : [];
+    },
+    agents: async () => [],
+    importSession: async (session) => {
+      calls.push(`import:${session.providerHandleId}`);
+      return { id: "a", provider: session.providerId, persistence: { sessionId: "cold" } };
+    },
+    load: async () => {},
+    activate: async () => {},
+  };
+  await discoverOnce(client);
+  expect(calls).toEqual(["warm", "sessions", "import:cold"]);
+});
+
+test("an unavailable provider fails the pass with its diagnostic instead of finding nothing", async () => {
+  const client: DiscoveryClient = {
+    warmProvider: async () => {
+      throw new Error("Codex Terminal provider is unavailable: codex not found on PATH");
+    },
+    sessions: async () => expect.unreachable(),
+    agents: async () => [],
+    importSession: async () => expect.unreachable(),
+    load: async () => {},
+    activate: async () => {},
+  };
+  await expect(discoverOnce(client)).rejects.toThrow("codex not found on PATH");
+});
