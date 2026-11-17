@@ -11,6 +11,7 @@ import {
 import type { AttachedAgent, DiscoveryClient } from "./discovery.js";
 import { PLUGIN_ID, PROVIDER_ID } from "./ids.js";
 import { warnTentativePaseo } from "./protocol.js";
+import { importIntoSessionWorkspace } from "./session-workspace.js";
 
 const DIRECTORY_PAGE_SIZE = 200;
 const MAX_DIRECTORY_PAGES = 100;
@@ -56,6 +57,17 @@ export async function connectPaseoHost(
       client,
       close,
       discovery: {
+        async warmProvider() {
+          // Requesting the snapshot makes Paseo load stale provider entries, which
+          // connects this provider's runtime and enables its session listing.
+          const provider = (await client.getProvidersSnapshot()).entries.find(
+            (entry) => entry.provider === PROVIDER_ID,
+          );
+          if (provider?.status === "error" || provider?.status === "unavailable")
+            throw new Error(
+              `Codex Terminal provider is ${provider.status}${provider.error ? `: ${provider.error}` : ""}`,
+            );
+        },
         async sessions() {
           const response = await client.fetchRecentProviderSessions({
             providers: [PROVIDER_ID],
@@ -89,12 +101,18 @@ export async function connectPaseoHost(
           throw new Error("Paseo directory page limit reached");
         },
         importSession: (session) =>
-          client.importAgent({
-            providerId: session.providerId,
-            providerHandleId: session.providerHandleId,
-            cwd: session.cwd,
-            labels: { "bridge.owner": PLUGIN_ID },
-          }),
+          importIntoSessionWorkspace(
+            {
+              importAgent: (input) => client.importAgent(input),
+              createWorkspace: (input) => client.createWorkspace(input),
+            },
+            session,
+            (error) =>
+              console.error(
+                `Codex discovery could not create a workspace for ${session.providerHandleId}; using the folder workspace:`,
+                error,
+              ),
+          ),
         async load(agentId) {
           await client.fetchAgentTimeline(agentId, { direction: "tail", limit: 1 });
         },

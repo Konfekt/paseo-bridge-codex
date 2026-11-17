@@ -6,6 +6,8 @@ export interface DiscoverableSession {
   providerId: string;
   providerHandleId: string;
   cwd: string;
+  title?: string | null | undefined;
+  firstPromptPreview?: string | null | undefined;
 }
 export interface AttachedAgent {
   id: string;
@@ -14,6 +16,9 @@ export interface AttachedAgent {
   archivedAt?: string | null | undefined;
 }
 export interface DiscoveryClient {
+  /** Paseo lists a plugin provider's sessions only after its runtime has connected,
+   * which otherwise happens only when an app refreshes providers or opens an agent. */
+  warmProvider(): Promise<void>;
   sessions(): Promise<DiscoverableSession[]>;
   agents(): Promise<AttachedAgent[]>;
   importSession(session: DiscoverableSession): Promise<AttachedAgent>;
@@ -28,6 +33,8 @@ function attachedTo(agent: AttachedAgent, session: DiscoverableSession): boolean
 }
 
 export async function discoverOnce(client: DiscoveryClient, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
+  await client.warmProvider();
   signal?.throwIfAborted();
   const sessions = await client.sessions();
   signal?.throwIfAborted();

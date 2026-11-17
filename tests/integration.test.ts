@@ -277,26 +277,36 @@ test("plugin lifecycle discovers, restores and steers terminal threads without a
       reconnect: { enabled: false },
     });
     await client.connect();
+    // An existing folder workspace, as left by another agent or bridge in the same directory.
+    const folderWorkspace = (
+      await client.createWorkspace({ source: { kind: "directory", path: root }, title: "Folder" })
+    ).workspace?.id;
+    expect(folderWorkspace).toBeDefined();
     const pluginDirectory = process.env["PASEO_BRIDGE_TEST_PLUGIN_DIR"] ?? resolve(".");
     expect(await client.installDirectoryPlugin(pluginDirectory)).toMatchObject({
       id: "paseo-bridge-codex",
       status: "running",
     });
     const connectedClient = client;
-    await expect
-      .poll(
-        async () =>
-          (await connectedClient.getProvidersSnapshot()).entries.find(
-            (provider) => provider.provider === "codex-terminal",
-          )?.status,
-        { timeout: 15_000 },
-      )
-      .toBe("ready");
+    // No client warms the provider here: Paseo lists a plugin provider's sessions only
+    // after its runtime connects, so discovery itself must bring the provider up.
     await expect
       .poll(async () => (await connectedClient.fetchAgents()).entries.length, { timeout: 15_000 })
       .toBe(1);
     const agentId = (await client.fetchAgents()).entries[0]?.agent.id;
     if (!agentId) throw new Error("No terminal thread automatically imported");
+    // Paseo's sidebar lists workspaces; each thread needs its own, not the folder's shared one.
+    const workspaceOf = async (id: string) =>
+      (await connectedClient.fetchAgents()).entries.find((entry) => entry.agent.id === id)?.agent
+        .workspaceId;
+    const threadWorkspace = await workspaceOf(agentId);
+    expect(threadWorkspace).toBeDefined();
+    expect(threadWorkspace).not.toBe(folderWorkspace);
+    const workspaceTitles = async () =>
+      Object.fromEntries(
+        (await connectedClient.fetchWorkspaces()).entries.map((entry) => [entry.id, entry.name]),
+      );
+    expect((await workspaceTitles())[threadWorkspace ?? ""]).toBe("Terminal contract");
     await expect
       .poll(() => daemon.agentManager.getAgent(agentId)?.activeTurnId)
       .toBe("native-turn");
@@ -478,10 +488,17 @@ test("plugin lifecycle discovers, restores and steers terminal threads without a
       (await client.fetchAgents()).entries.find((entry) => entry.agent.id === agentId)?.agent
         .labels,
     ).toMatchObject({ ...labelsBeforeHide, "contract.unrelated": "preserve" });
-    threads.push({ ...thread, id: "later-terminal-thread" });
+    threads.push({ ...thread, id: "later-terminal-thread", name: "Later thread" });
     await expect
       .poll(async () => (await connectedClient.fetchAgents()).entries.length, { timeout: 15_000 })
       .toBe(2);
+    const laterAgentId = (await client.fetchAgents()).entries.find(
+      (entry) => entry.agent.id !== agentId,
+    )?.agent.id;
+    const laterWorkspace = laterAgentId ? await workspaceOf(laterAgentId) : undefined;
+    expect(laterWorkspace).toBeDefined();
+    expect(new Set([folderWorkspace, threadWorkspace, laterWorkspace]).size).toBe(3);
+    expect((await workspaceTitles())[laterWorkspace ?? ""]).toBe("Later thread");
     const agentIds = (await client.fetchAgents()).entries.map((entry) => entry.agent.id).sort();
     const persistedConfig = (await client.getDaemonConfig()).config;
     expect(persistedConfig.plugins).toBeDefined();
