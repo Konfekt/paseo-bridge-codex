@@ -2,3 +2,10 @@ allowBuilds:
   esbuild: true
   msgpackr-extract: true
   node-pty: true
+minimumReleaseAgeExclude:
+  - "@getpaseo/client@0.16.2"
+  - "@getpaseo/highlight@0.16.2"
+  - "@getpaseo/plugin@0.16.2"
+  - "@getpaseo/protocol@0.16.2"
+  - "@getpaseo/relay@0.16.2"
+  - "@getpaseo/server@0.16.2"

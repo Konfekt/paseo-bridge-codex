@@ -4,25 +4,26 @@ This file describes what the automated checks cover for the current dependency s
 
 ## Supported versions
 
-| Component                   | Verified                                              | Accepted                                                                                                                                                                  | Rejected                                        |
-| --------------------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
-| Codex CLI and shared daemon | 0.164.0 – 0.169.x (the contract test runs on 0.169.0) | Newer releases and pre-releases above 0.164.0, with a one-time warning per component and version                                                                          | Below 0.164.0, and 0.164.0 pre-releases         |
-| Paseo host                  | 0.15.4 (locked helper and host version) and 0.14.0    | Any version matching `>=0.14.0`, including pre-releases, because Paseo also checks the stable core version; versions above 0.15.x and pre-releases log a one-time warning | Below 0.14.0 (Paseo refuses to load the plugin) |
+| Component                   | Verified                                                   | Accepted                                                                                                                                                                  | Rejected                                        |
+| --------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| Codex CLI and shared daemon | 0.164.0 – 0.170.x (the contract test runs on 0.170.0)      | Newer releases and pre-releases above 0.164.0, with a one-time warning per component and version                                                                          | Below 0.164.0, and 0.164.0 pre-releases         |
+| Paseo host                  | 0.16.2 (locked helper and host version), 0.15.4 and 0.14.0 | Any version matching `>=0.14.0`, including pre-releases, because Paseo also checks the stable core version; versions above 0.16.x and pre-releases log a one-time warning | Below 0.14.0 (Paseo refuses to load the plugin) |
 
 `src/protocol.ts` holds the version policy (`CODEX_MIN_VERSION`, `CODEX_TESTED_VERSION`, `PASEO_MIN_VERSION`, `PASEO_TESTED_VERSION`). `paseo-plugin.json` holds the Paseo requirement that Paseo enforces itself. `tests/version.test.ts` checks that these constants match the manifest and the pinned packages. The `@getpaseo/*` runtime helpers and the `@openai/codex` devDependency are pinned in `package.json` and the lockfile.
 
-### Codex 0.169.x compared with the minimum
+### Codex 0.170.x compared with the minimum
 
-Between 0.164.0 and 0.169.x, the app-server methods the bridge calls (`initialize`, `thread/list`, `thread/loaded/list`, `thread/read`, `thread/resume`, `thread/items/list`, `thread/turns/list`, `turn/start`, `turn/steer`, `turn/interrupt`, `thread/unsubscribe`) only gained optional fields:
+Between 0.164.0 and 0.170.x, the app-server methods the bridge calls (`initialize`, `thread/list`, `thread/loaded/list`, `thread/read`, `thread/resume`, `thread/items/list`, `thread/turns/list`, `turn/start`, `turn/steer`, `turn/interrupt`, `thread/unsubscribe`) only gained optional fields:
 - `thread/list` accepts `attachedToThreadId`, `includeAttachedThreads` and `currentAccountOnly` filters. The defaults keep ordinary listings unchanged.
 - `Thread` carries `attachedToThreadId`.
 - `thread/items/list` accepts an opt-in `deferOutput`, and entries may carry `outputDeferred`. The bridge does not request deferral, so outputs stay inline.
+- `agentMessage` items carry an optional `moderation.display` hint for how Codex Chat presents a recovered answer; 0.170 reshaped it into versioned `show`, `hide` and `block` variants. The bridge does not read it and shows the item text.
 
 The control socket (`$CODEX_HOME/app-server-control/app-server-control.sock`), `codex app-server proxy --sock`, thread and turn status values, and the async-question reply envelope are unchanged.
 
-### Paseo 0.15.4 compared with 0.14.0
+### Paseo 0.16.2 compared with 0.14.0
 
-The provider, hook, reverse-RPC and host-client interfaces the plugin uses behave the same. The released-host test passes with 0.15.4 helpers against both a 0.15.4 and a 0.14.0 host. A 0.16.1 host passes the same test, and a real-Codex probe, once the test's server-internal storage call uses `daemon.agentStorage.listAll()`; 0.16 removed `list()`. Treat 0.16 as tentative until the pinned helpers move to it.
+The provider, hook, reverse-RPC and host-client interfaces the plugin uses behave the same. The released-host test passes with the locked 0.16.2 helpers against 0.16.2, 0.15.4 and 0.14.0 hosts. Only the test's own server-internal storage call differs: 0.16 renamed `agentStorage.list()` to `listAll()`, and the test accepts either.
 
 ## Checking a new release
 
@@ -30,8 +31,8 @@ For a new **Codex** release:
 1. Bump `@openai/codex` in `package.json` and run `pnpm install`.
 2. Compare the generated bindings, for example `codex app-server generate-ts --experimental --out <dir>` for the old and new versions, then `diff -r`. Look at the methods listed above, `Thread`, `Turn`, `ThreadStatus`, `ThreadItem`, `ThreadItemEntry`, the server request types in `permissions.ts`, and `InitializeResponse`.
 3. Check that the control socket path and `app-server proxy --sock` are unchanged (`codex app-server proxy --help`).
-4. Run `pnpm verify`. `tests/codex-contract.test.ts` starts the pinned daemon and asserts its version, so update the expected version there.
-5. If everything passes, raise `CODEX_TESTED_VERSION`. Until then, users on the new release get the tentative-version warning, but the bridge keeps working.
+4. Raise `CODEX_TESTED_VERSION` to the pinned release and run `pnpm verify`. `tests/codex-contract.test.ts` starts the pinned daemon and asserts that it reports `CODEX_TESTED_VERSION`.
+5. If something fails, keep the previous `CODEX_TESTED_VERSION` and pin until fixed. Users on the new release get the tentative-version warning, but the bridge keeps working.
 
 What tends to break, and how it shows:
 - **Required fields removed or retyped** in thread, turn or item payloads: schema-validation errors on attach or refresh. The attachment shows a synchronization notice and reconnects. Nothing is replayed.
