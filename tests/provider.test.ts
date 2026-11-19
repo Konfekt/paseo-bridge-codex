@@ -1688,18 +1688,20 @@ describe("shared-thread provider", () => {
       "codex_cli_rs/0.164.0 (Ubuntu 24.4.0; x86_64) xterm-256color (paseo_bridge_codex; 0.1.0)",
       "codex_cli_rs/0.169.0 (Ubuntu 24.4.0; x86_64) xterm-256color (paseo_bridge_codex; 0.1.0)",
       "codex_cli_rs/0.170.0 (Linux)",
-      "codex_cli_rs/0.171.0-alpha.5 (Linux)",
+      "codex_cli_rs/0.171.0 (Linux)",
+      "codex_cli_rs/0.172.0-alpha.1 (Linux)",
     ]) {
       const result = (await listWith(userAgent)).find((event) => event.type === "sessions");
       expect(result?.sessions.map((session) => session.persistence)).toEqual([open.persistence]);
     }
     expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining("Shared Codex daemon 0.170.0 is newer than the tested range"),
+      expect.stringContaining("Shared Codex daemon 0.171.0 is newer than the tested range"),
     );
     expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining("Shared Codex daemon 0.171.0-alpha.5 is a pre-release"),
+      expect.stringContaining("Shared Codex daemon 0.172.0-alpha.1 is a pre-release"),
     );
     expect(warn).not.toHaveBeenCalledWith(expect.stringContaining("0.169.0"));
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining("0.170.0"));
     for (const userAgent of [
       "codex_cli_rs/0.163.0 (Linux)",
       "codex_cli_rs/0.164.0-alpha.11.1 (Linux)",
@@ -1721,7 +1723,7 @@ describe("shared-thread provider", () => {
     };
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     try {
-      expect(await statusFor("0.169.0")).toEqual({ available: true });
+      expect(await statusFor("0.170.0")).toEqual({ available: true });
       const tentative = await statusFor("0.173.0");
       expect(tentative).toMatchObject({ available: true });
       expect(tentative?.diagnostic).toContain("Codex CLI 0.173.0 is newer than the tested");

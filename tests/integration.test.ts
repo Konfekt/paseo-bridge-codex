@@ -10,6 +10,17 @@ import { createPaseoDaemon, createRootLogger } from "@getpaseo/server";
 import { expect, test, vi } from "vitest";
 import { WebSocketServer } from "ws";
 
+/** Paseo 0.16 renamed the storage listing to `listAll()`; earlier hosts only have `list()`. */
+function storedAgents(storage: object): Promise<Array<{ id: string }>> {
+  const listing = storage as {
+    listAll?: () => Promise<Array<{ id: string }>>;
+    list?: () => Promise<Array<{ id: string }>>;
+  };
+  const list = listing.listAll ?? listing.list;
+  if (!list) throw new Error("Paseo agent storage has no listing method");
+  return list.call(storage);
+}
+
 test("plugin lifecycle discovers, restores and steers terminal threads without a separate worker", async () => {
   const root = await mkdtemp(join(tmpdir(), "pbc-host-"));
   const codexHome = join(root, "codex");
@@ -565,7 +576,9 @@ test("plugin lifecycle discovers, restores and steers terminal threads without a
     await delay(2_500);
     expect(requests).toHaveLength(requestCount);
     // Disabled providers are hidden from Paseo's directory, but their records must remain.
-    expect((await daemon.agentStorage.list()).map((agent) => agent.id).sort()).toEqual(agentIds);
+    expect((await storedAgents(daemon.agentStorage)).map((agent) => agent.id).sort()).toEqual(
+      agentIds,
+    );
     expect(http.listening).toBe(true);
     expect(await client.enablePlugin("paseo-bridge-codex")).toMatchObject({ status: "running" });
     await expect

@@ -7,7 +7,7 @@ import type { RpcClient } from "./rpc.js";
 /** Oldest Codex release whose app-server contract this bridge supports; older releases are rejected. */
 export const CODEX_MIN_VERSION = "0.164.0";
 /** Newest verified Codex release; patch releases of this minor line count as verified too. */
-export const CODEX_TESTED_VERSION = "0.169.0";
+export const CODEX_TESTED_VERSION = "0.170.0";
 const CODEX_TESTED_LINE = CODEX_TESTED_VERSION.replace(/\.\d+$/, ".x");
 
 /**
@@ -106,7 +106,7 @@ export function warnTentativeCodex(
 /** Oldest Paseo host the manifest admits (`paseo-plugin.json`). */
 export const PASEO_MIN_VERSION = "0.14.0";
 /** Newest verified Paseo host; patch releases of this minor line count as verified too. */
-export const PASEO_TESTED_VERSION = "0.15.4";
+export const PASEO_TESTED_VERSION = "0.16.2";
 
 /**
  * Paseo itself enforces the manifest minimum, so only newer or pre-release hosts matter here.

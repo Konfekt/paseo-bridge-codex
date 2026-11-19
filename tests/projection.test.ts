@@ -12,6 +12,28 @@ describe("native timeline snapshots", () => {
     });
     expect(initial).toEqual({ type: "assistant_message", id: "message", text: "Hello" });
   });
+
+  it("tolerates every agentMessage moderation display variant", () => {
+    // Codex 0.170 reshaped `moderation.display` into versioned show, hide and block variants.
+    const displays = [
+      { action: "show", blockType: null },
+      { version: 1, mode: "show", trustedContacts: {}, annotation: null },
+      { version: 1, mode: "hide", replacement: { kind: "wellbeingPromptHelpline" } },
+      { version: 1, mode: "block", reason: { kind: "unknownFutureReason" } },
+      { version: 2, mode: "futureMode" },
+    ];
+    for (const display of displays)
+      expect(
+        projectItem({
+          type: "agentMessage",
+          id: "moderated",
+          text: "Answer",
+          phase: null,
+          memoryCitation: null,
+          moderation: { moderated: true, display },
+        }),
+      ).toEqual({ type: "assistant_message", id: "moderated", text: "Answer" });
+  });
 });
 
 describe("native approvals", () => {

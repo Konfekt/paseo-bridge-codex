@@ -7,8 +7,8 @@ The package supplies a **Codex Terminal** provider (`codex-terminal`) and one pl
 ## Setup
 
 Supported releases:
-- **Paseo 0.14.0 or newer** (manifest requirement `>=0.14.0`). The plugin's own Paseo helpers are locked to **0.15.4**; the released-host tests pass on Paseo 0.15.4 and 0.14.0. Newer Paseo releases, including betas, are allowed tentatively: discovery logs a warning once per host version (`Paseo host ... is newer than the tested range ...; continuing tentatively`).
-- **Codex 0.164.0 or newer.** **0.164.0 through 0.169.x** is verified. Newer releases and pre-releases are accepted **tentatively**: the bridge logs a warning once per version (`... is newer than the tested range ...` or `... is a pre-release ...`, then `continuing tentatively`) and keeps working instead of refusing. Releases older than 0.164.0, and pre-releases of 0.164.0 itself, are rejected because they lack the app-server methods the bridge uses. See [docs/verification.md](docs/verification.md#checking-a-new-release) for promoting a newer release to verified.
+- **Paseo 0.14.0 or newer** (manifest requirement `>=0.14.0`). The plugin's own Paseo helpers are locked to **0.16.2**; the released-host test passes on Paseo 0.16.2, 0.15.4 and 0.14.0. Newer Paseo releases, including betas, are allowed tentatively: discovery logs a warning once per host version (`Paseo host ... is newer than the tested range ...; continuing tentatively`).
+- **Codex 0.164.0 or newer.** **0.164.0 through 0.170.x** is verified. Newer releases and pre-releases are accepted **tentatively**: the bridge logs a warning once per version (`... is newer than the tested range ...` or `... is a pre-release ...`, then `continuing tentatively`) and keeps working instead of refusing. Releases older than 0.164.0, and pre-releases of 0.164.0 itself, are rejected because they lack the app-server methods the bridge uses. See [docs/verification.md](docs/verification.md#checking-a-new-release) for promoting a newer release to verified.
 
 Node.js 22.22 or newer is required. Runtime tests ran on Linux; Windows and macOS have not been verified. The bridge requires Codex's Unix control socket.
 
