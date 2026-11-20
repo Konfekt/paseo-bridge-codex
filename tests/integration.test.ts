@@ -49,6 +49,7 @@ test("plugin lifecycle discovers, restores and steers terminal threads without a
     status: { type: "active" },
   };
   const threads = [thread];
+  let unreadableThreadId: string | undefined;
   let latestTurnId = "native-turn";
   const historicalRecordMarker = "Unique native historical record";
   const items: Array<{ turnId: string; item: Record<string, unknown> }> = [
@@ -134,6 +135,17 @@ test("plugin lifecycle discovers, restores and steers terminal threads without a
           result = { data: threads, nextCursor: null };
           break;
         case "thread/read":
+          if (params["threadId"] === unreadableThreadId) {
+            socket.send(
+              JSON.stringify({
+                id: message.id,
+                error: { code: -32600, message: `thread not loaded: ${unreadableThreadId}` },
+              }),
+            );
+            return;
+          }
+          result = { thread: requestedThread };
+          break;
         case "thread/resume":
           result = { thread: requestedThread };
           break;
@@ -499,6 +511,9 @@ test("plugin lifecycle discovers, restores and steers terminal threads without a
       (await client.fetchAgents()).entries.find((entry) => entry.agent.id === agentId)?.agent
         .labels,
     ).toMatchObject({ ...labelsBeforeHide, "contract.unrelated": "preserve" });
+    // A stale native listing must not suppress a different terminal's sidebar entry.
+    unreadableThreadId = "unreadable-terminal-thread";
+    threads.push({ ...thread, id: unreadableThreadId });
     threads.push({ ...thread, id: "later-terminal-thread", name: "Later thread" });
     await expect
       .poll(async () => (await connectedClient.fetchAgents()).entries.length, { timeout: 15_000 })

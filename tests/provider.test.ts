@@ -9,7 +9,7 @@ import type {
 import { describe, expect, it, vi } from "vitest";
 import { AGENT_ID_ENV, CAPABILITIES, createBridgeProvider } from "../src/provider.js";
 import { hiddenQuestionLabel, type QuestionVisibility } from "../src/questions.js";
-import type { RpcClient, RpcMessage } from "../src/rpc.js";
+import { type RpcClient, type RpcMessage, RpcResponseError } from "../src/rpc.js";
 
 const threadId = "019a0000-0000-7000-8000-000000000001";
 const codexHome = "/tmp/bridge-test-home";
@@ -1614,6 +1614,141 @@ describe("shared-thread provider", () => {
       const result = events.find((event) => event.type === "sessions");
       expect(result?.sessions.map((session) => session.persistence)).toEqual([open.persistence]);
       expect(daemon.calls.some((call) => call.method === "thread/resume")).toBe(false);
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("lists healthy terminal threads when another thread disappears during discovery and retries it later", async () => {
+    const daemon = new NativeDaemon();
+    const original = daemon.request.bind(daemon);
+    const unavailable = { ...nativeThread, id: "disappearing-thread" };
+    let readable = false;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    daemon.request = async (method, params) => {
+      if (method === "thread/loaded/list")
+        return { data: [unavailable.id, threadId], nextCursor: null };
+      if (method === "thread/list") return { data: [unavailable, nativeThread], nextCursor: null };
+      if (
+        method === "thread/read" &&
+        (params as { threadId: string }).threadId === unavailable.id
+      ) {
+        if (!readable) throw new RpcResponseError(-32600, `thread not loaded: ${unavailable.id}`);
+        return { thread: unavailable };
+      }
+      return original(method, params);
+    };
+    const bridge = createBridgeProvider(
+      async () => null,
+      visibleQuestions,
+      async () => daemon,
+    );
+    const connection = await bridge.registration.connect({
+      versions: [1],
+      capabilities: [...CAPABILITIES],
+      launch,
+    });
+    const events: ProviderEvent[] = [];
+    connection.onEvent((event) => events.push(event));
+    try {
+      for (const requestId of ["first", "retry"]) {
+        await connection.send({ type: "sessions", requestId });
+        const result = events.find(
+          (event) => event.type === "sessions" && event.requestId === requestId,
+        );
+        expect(
+          result?.type === "sessions" && result.sessions.map((session) => session.persistence),
+        ).toEqual([open.persistence]);
+      }
+      expect(events.some((event) => event.type === "request.failed")).toBe(false);
+      expect(warn).toHaveBeenCalledOnce();
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("thread not loaded: disappearing-thread"),
+      );
+      readable = true;
+      await connection.send({ type: "sessions", requestId: "recovered" });
+      const recovered = events.find(
+        (event) => event.type === "sessions" && event.requestId === "recovered",
+      );
+      expect(
+        recovered?.type === "sessions" && recovered.sessions.map((session) => session.persistence),
+      ).toEqual([
+        { ...open.persistence, data: { threadId: unavailable.id, codexHome } },
+        open.persistence,
+      ]);
+      expect(daemon.calls.some((call) => call.method === "thread/resume")).toBe(false);
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it.each([
+    new Error("RPC WebSocket closed (code 1006)"),
+    new RpcResponseError(-32601, "Method not found"),
+    new RpcResponseError(-32602, "Invalid params"),
+  ])("fails discovery visibly for transport or protocol failure: %s", async (failure) => {
+    const daemon = new NativeDaemon();
+    const original = daemon.request.bind(daemon);
+    daemon.request = async (method, params) => {
+      if (method === "thread/read") throw failure;
+      return original(method, params);
+    };
+    const bridge = createBridgeProvider(
+      async () => null,
+      visibleQuestions,
+      async () => daemon,
+    );
+    const connection = await bridge.registration.connect({
+      versions: [1],
+      capabilities: [...CAPABILITIES],
+      launch,
+    });
+    const events: ProviderEvent[] = [];
+    connection.onEvent((event) => events.push(event));
+    try {
+      await connection.send({ type: "sessions", requestId: "failed" });
+      expect(events).toEqual([
+        { type: "request.failed", requestId: "failed", error: { message: failure.message } },
+      ]);
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("reports an all-rejected native thread listing instead of claiming no sessions exist", async () => {
+    const daemon = new NativeDaemon();
+    const original = daemon.request.bind(daemon);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    daemon.request = async (method, params) => {
+      if (method === "thread/read") throw new RpcResponseError(-32600, "native read unavailable");
+      return original(method, params);
+    };
+    const bridge = createBridgeProvider(
+      async () => null,
+      visibleQuestions,
+      async () => daemon,
+    );
+    const connection = await bridge.registration.connect({
+      versions: [1],
+      capabilities: [...CAPABILITIES],
+      launch,
+    });
+    const events: ProviderEvent[] = [];
+    connection.onEvent((event) => events.push(event));
+    try {
+      await connection.send({ type: "sessions", requestId: "failed" });
+      expect(events).toEqual([
+        {
+          type: "request.failed",
+          requestId: "failed",
+          error: {
+            message: expect.stringContaining(
+              `Thread ${threadId}: RPC error -32600: native read unavailable`,
+            ),
+          },
+        },
+      ]);
+      expect(warn).toHaveBeenCalledOnce();
     } finally {
       await connection.close();
     }

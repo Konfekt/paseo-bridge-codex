@@ -25,7 +25,7 @@ import {
   warnTentativeCodex,
 } from "./protocol.js";
 import type { QuestionVisibility } from "./questions.js";
-import { connectRpc, type RpcClient } from "./rpc.js";
+import { connectRpc, type RpcClient, RpcResponseError } from "./rpc.js";
 import { AttachedThread } from "./thread.js";
 
 export { PROVIDER_ID };
@@ -112,6 +112,7 @@ function connection(
 ): ProviderConnection {
   const home = codexHome(launch);
   const sessions = new Map<string, AttachedThread>();
+  const unreadableThreadWarnings = new Map<string, string>();
   const listeners = new Set<(event: ProviderEvent) => void>();
   let rpc: RpcClient | undefined;
   let connecting: Promise<RpcClient> | undefined;
@@ -238,11 +239,35 @@ function connection(
         threadSchema,
       );
       const found = [];
-      for (const saved of stored) {
-        if (!ids.has(saved.id)) continue;
-        const { thread } = z
-          .object({ thread: threadSchema })
-          .parse(await client.request("thread/read", { threadId: saved.id, includeTurns: false }));
+      const candidates = stored.filter((saved) => ids.has(saved.id));
+      const candidateIds = new Set(candidates.map((saved) => saved.id));
+      for (const id of unreadableThreadWarnings.keys())
+        if (!candidateIds.has(id)) unreadableThreadWarnings.delete(id);
+      const readFailures: Error[] = [];
+      let readableThreads = 0;
+      for (const saved of candidates) {
+        let snapshot: unknown;
+        try {
+          snapshot = await client.request("thread/read", {
+            threadId: saved.id,
+            includeTurns: false,
+          });
+        } catch (error) {
+          // A loaded thread can disappear between the two listings and this read.
+          // Codex rejects that read with -32600. Transport and protocol failures
+          // must still fail the scan so a disconnected daemon is never an empty list.
+          if (!(error instanceof RpcResponseError) || error.code !== -32600) throw error;
+          const message = `Thread ${saved.id}: ${error.message}`;
+          readFailures.push(new Error(message, { cause: error }));
+          if (unreadableThreadWarnings.get(saved.id) !== message) {
+            console.warn(`Codex discovery skipped an unreadable thread; will retry: ${message}`);
+            unreadableThreadWarnings.set(saved.id, message);
+          }
+          continue;
+        }
+        const { thread } = z.object({ thread: threadSchema }).parse(snapshot);
+        unreadableThreadWarnings.delete(saved.id);
+        readableThreads++;
         const terminal =
           thread.source === "cli" ||
           (thread.source === "vscode" && thread.originator === "codex-tui");
@@ -269,6 +294,11 @@ function connection(
           updatedAt: new Date(thread.updatedAt * 1000).toISOString(),
         });
       }
+      if (readFailures.length && readableThreads === 0)
+        throw new AggregateError(
+          readFailures,
+          `Codex discovery could not read any loaded thread: ${readFailures.map((error) => error.message).join("; ")}`,
+        );
       found.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
       emit({
         type: "sessions",

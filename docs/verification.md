@@ -65,6 +65,7 @@ The real-Codex test runs a test-owned daemon in a disposable home against a loop
 
 - **Transport:** the official proxy forwards bytes to a WebSocket endpoint, so the bridge speaks WebSocket framing over the proxy's stdio.
 - **Eligibility:** a thread qualifies only when it is both loaded and persisted. An empty start screen has no resumable record.
+- **Discovery isolation:** Codex can reject `thread/read` with `-32600` after a thread disappears between listing and reading. Other readable terminals still import; the rejected thread is retried next pass. Its diagnostic is logged once until it changes or the thread recovers. Transport errors, invalid protocol responses and scans with no readable candidates still fail visibly.
 - **Activation:** Paseo's manager only receives turn events after registration, so discovery activates each attachment explicitly after import or restore.
 - **Revision guards:** native notification revisions keep a stale snapshot from overwriting newer turn state. The last published turn is kept until its native outcome is known; no completion is invented.
 - **Recovery:** a snapshot failure closes the proxy and rehydrates every attachment without repeating mutations. A per-thread failure stays isolated.

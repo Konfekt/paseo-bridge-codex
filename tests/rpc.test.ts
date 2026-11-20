@@ -2,7 +2,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import type { ProviderLaunch } from "@getpaseo/plugin/server/provider";
 import { afterEach, expect, test, vi } from "vitest";
-import { connectRpc, type RpcClient, type RpcMessage } from "../src/rpc.js";
+import { connectRpc, type RpcClient, type RpcMessage, RpcResponseError } from "../src/rpc.js";
 
 const launch: ProviderLaunch = {
   command: process.execPath,
@@ -49,7 +49,9 @@ test("correlates concurrent native replies and delivers live requests through th
     { method: "notice", params: { live: true } },
     { method: "approval", id: "native-1", params: { command: "pwd" } },
   ]);
-  await expect(client.request("failure", {})).rejects.toThrow("native rejection");
+  const rejected = await client.request("failure", {}).catch((error: unknown) => error);
+  expect(rejected).toBeInstanceOf(RpcResponseError);
+  expect(rejected).toMatchObject({ code: -32001, message: "RPC error -32001: native rejection" });
   const answered = new Promise<RpcMessage>((resolve) => {
     client.onMessage((message) => {
       if (message.method === "answered") resolve(message);

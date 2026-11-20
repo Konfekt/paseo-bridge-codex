@@ -19,6 +19,17 @@ export interface RpcClient {
   close(): Promise<void>;
 }
 
+/** A rejection received from the native server, distinct from a broken transport. */
+export class RpcResponseError extends Error {
+  constructor(
+    readonly code: number,
+    message: string,
+  ) {
+    super(`RPC error ${code}: ${message}`);
+    this.name = "RpcResponseError";
+  }
+}
+
 const MAX_FRAME_BYTES = 8 * 1024 * 1024;
 const MAX_PENDING_REQUESTS = 128;
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -142,7 +153,7 @@ export async function connectRpc(launch: ProviderLaunch): Promise<RpcClient> {
     clearTimeout(request.timer);
     if (record(rpcError))
       request.reject(
-        new Error(`RPC error ${String(rpcError["code"])}: ${String(rpcError["message"])}`),
+        new RpcResponseError(rpcError["code"] as number, rpcError["message"] as string),
       );
     else request.resolve(value["result"]);
   }
