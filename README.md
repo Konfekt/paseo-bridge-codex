@@ -74,6 +74,10 @@ If Paseo uses a different environment, merge an explicit `agents.providers.codex
 
 Use the actual binary and home paths. Reload Paseo after changing the configuration. The plugin uses the Paseo launcher's explicit `PASEO_HOME`; a custom launcher must supply it. The diagnostic CLI's `--paseo-home` selects Paseo, not Codex; the provider environment selects Codex.
 
+### Remote hosts
+
+Discovery runs inside the Paseo daemon and finds it through `$PASEO_HOME/paseo.pid`, on any listen address or port, TCP or Unix socket. A password-protected daemon admits it with `$PASEO_HOME/local-credential`, so no password is configured. `PASEO_HOST` is not used. Codex threads are read from the provider's `CODEX_HOME` and attached through that home's Codex daemon socket. Codex, its home and the daemon therefore have to be on the same machine. For Codex on another machine, install Paseo and this plugin there and add that daemon as a host in the Paseo app, for example with `paseo host add` or by pairing the app with it. Its threads then appear under that host.
+
 ## Operation
 
 | Command or action                                     | Result                                                                                          |
