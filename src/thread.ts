@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type {
+  ProviderConfigChanges,
   ProviderEvent,
   ProviderInput,
   ProviderPermissionRequest,
@@ -65,6 +66,9 @@ export class AttachedThread {
   private turnStateDirty = false;
   // The host's last published active turn survives unsuccessful rehydration.
   private publishedTurnId: string | undefined;
+  // Native model settings, published to Paseo as the session configuration.
+  private model: string | null = null;
+  private effort: string | null = null;
 
   constructor(
     readonly sessionId: string,
@@ -96,7 +100,12 @@ export class AttachedThread {
     this.permissions.clear();
     this.questions.clear();
     const response = z
-      .object({ thread: threadSchema })
+      .object({
+        thread: threadSchema,
+        // The thread's effective settings; the thread record keeps what it was created with.
+        model: z.string().nullish(),
+        reasoningEffort: z.string().nullish(),
+      })
       .parse(await rpc.request("thread/resume", { threadId: this.threadId, excludeTurns: true }));
     if (response.thread.id !== this.threadId) throw new Error("Codex resumed a different thread");
     if (response.thread.canAcceptDirectInput !== true)
@@ -114,20 +123,50 @@ export class AttachedThread {
       this.activeTurn = latest?.status === "inProgress" ? latest : undefined;
     this.synchronizeQuestions(questions.pending());
     await this.refresh();
+    this.model = response.model || response.thread.model;
+    this.effort =
+      response.reasoningEffort === undefined
+        ? response.thread.reasoningEffort
+        : response.reasoningEffort;
+    this.emitConfig();
+  }
+
+  private emitConfig(): void {
     this.emit({
       type: "session.config",
       sessionId: this.sessionId,
       config: {
-        ...(response.thread.model ? { model: response.thread.model } : {}),
-        ...(response.thread.reasoningEffort
-          ? { thinkingOption: response.thread.reasoningEffort }
-          : {}),
+        ...(this.model ? { model: this.model } : {}),
+        ...(this.effort ? { thinkingOption: this.effort } : {}),
         models: [],
         modes: [],
         thinkingOptions: [],
         settings: [],
       },
     });
+  }
+
+  /** Apply a model or reasoning-effort choice to the native thread, as Codex's own picker does. */
+  async configure(changes: ProviderConfigChanges): Promise<void> {
+    const rpc = this.rpc;
+    if (!rpc || this.hydrating || this.closed)
+      throw new Error(
+        "Codex attachment is disconnected or synchronizing; settings were not changed",
+      );
+    const options = { ...changes.settings, ...changes.providerOptions };
+    if (changes.mode != null || Object.keys(options).length)
+      throw new Error("Codex Terminal changes only the model and reasoning effort");
+    if (changes.model === null || changes.thinkingOption === null)
+      throw new Error("Codex Terminal cannot reset a native setting; choose a value instead");
+    const update = {
+      ...(changes.model !== undefined ? { model: changes.model } : {}),
+      ...(changes.thinkingOption !== undefined ? { effort: changes.thinkingOption } : {}),
+    };
+    if (!Object.keys(update).length) return;
+    await rpc.request("thread/settings/update", { threadId: this.threadId, ...update });
+    if (update.model !== undefined) this.model = update.model;
+    if (update.effort !== undefined) this.effort = update.effort;
+    this.emitConfig();
   }
 
   async activate(): Promise<boolean> {
@@ -190,7 +229,23 @@ export class AttachedThread {
       if (this.activated && !this.hydrating) this.emitPermission(request);
       return;
     }
-    if (message.method === "serverRequest/resolved") {
+    if (message.method === "thread/settings/updated") {
+      // Also reports choices made in the Codex terminal. An unexpected shape only skips the sync.
+      const parsed = z
+        .object({
+          threadSettings: z.object({ model: z.string().nullish(), effort: z.string().nullish() }),
+        })
+        .safeParse(params);
+      if (!parsed.success) return;
+      const { model, effort } = parsed.data.threadSettings;
+      const nextModel = model ?? this.model;
+      const nextEffort = effort === undefined ? this.effort : effort;
+      if (nextModel !== this.model || nextEffort !== this.effort) {
+        this.model = nextModel;
+        this.effort = nextEffort;
+        if (!this.hydrating) this.emitConfig();
+      }
+    } else if (message.method === "serverRequest/resolved") {
       const id = permissionId(z.union([z.string(), z.number()]).parse(params["requestId"]));
       if (this.permissions.delete(id) && this.activated) this.emitResolved(id);
     } else if (message.method === "turn/started" || message.method === "turn/completed") {
