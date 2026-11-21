@@ -2,6 +2,7 @@ import { join } from "node:path";
 import { execCommand } from "@getpaseo/plugin/server";
 import {
   negotiateProviderCapabilities,
+  type ProviderCatalog,
   type ProviderConnection,
   type ProviderEvent,
   type ProviderInput,
@@ -12,6 +13,7 @@ import {
 import { z } from "zod";
 import { errorMessage } from "./errors.js";
 import { PROVIDER_ID } from "./ids.js";
+import { readModelCatalog } from "./models.js";
 import {
   CODEX_MIN_VERSION,
   cliVersion,
@@ -35,6 +37,7 @@ export const CAPABILITIES = [
   "prompt.steer",
   "session.list",
   "session.persistence",
+  "session.configure",
   "permission",
 ] as const;
 
@@ -221,7 +224,16 @@ function connection(
   async function dispatch(input: ProviderInput): Promise<void> {
     requireProviderCapabilities(capabilities, input);
     if (input.type === "catalog") {
-      emit({ type: "catalog", requestId: input.requestId, catalog: { models: [], modes: [] } });
+      let catalog: ProviderCatalog = { models: [], modes: [] };
+      try {
+        catalog = await readModelCatalog(await getRpc());
+      } catch (error) {
+        // A failed catalog marks the provider as failed in Paseo, which would stop discovery.
+        console.warn(
+          `Codex model list unavailable; offering no model choices: ${errorMessage(error)}`,
+        );
+      }
+      emit({ type: "catalog", requestId: input.requestId, catalog });
     } else if (input.type === "sessions") {
       const client = await getRpc();
       const ids = new Set(await readPages(client, "thread/loaded/list", {}, z.string()));
@@ -353,6 +365,9 @@ function connection(
         if (attachments.get(thread.agentId) === thread) attachments.delete(thread.agentId);
         await thread.close();
         emit({ type: "session.closed", sessionId: input.sessionId });
+        emit({ type: "request.completed", requestId: input.requestId });
+      } else if (input.type === "session.configure") {
+        await thread.configure(input.changes);
         emit({ type: "request.completed", requestId: input.requestId });
       } else if (
         input.type === "session.prompt" ||

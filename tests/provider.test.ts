@@ -40,6 +40,35 @@ const nativeThread = {
   status: { type: "active" },
 };
 
+// Codex `model/list` entries: the picker uses the model slug, not the preset ID.
+const codexModels = [
+  {
+    id: "preset-a",
+    model: "gpt-a",
+    displayName: "GPT A",
+    description: "Default model",
+    hidden: false,
+    isDefault: true,
+    defaultReasoningEffort: "medium",
+    supportedReasoningEfforts: [
+      { reasoningEffort: "low", description: "Fast" },
+      { reasoningEffort: "medium", description: "Balanced" },
+      { reasoningEffort: "xhigh", description: "Deepest" },
+    ],
+    futureField: { ignored: true },
+  },
+  {
+    id: "preset-b",
+    model: "gpt-b",
+    displayName: "GPT B",
+    description: "Alternative",
+    hidden: false,
+    isDefault: false,
+    defaultReasoningEffort: "high",
+    supportedReasoningEfforts: [{ reasoningEffort: "high", description: "Thorough" }],
+  },
+];
+
 class NativeDaemon implements RpcClient {
   calls: Array<{ method: string; params: unknown }> = [];
   listeners = new Set<(message: RpcMessage) => void>();
@@ -104,6 +133,12 @@ class NativeDaemon implements RpcClient {
         return {};
       case "thread/unsubscribe":
         return {};
+      case "thread/settings/update":
+        return {};
+      case "model/list": {
+        const page = (params as { cursor?: string | null }).cursor === "page-2" ? 1 : 0;
+        return { data: [codexModels[page]], nextCursor: page === 0 ? "page-2" : null };
+      }
       default:
         throw new Error(`Unexpected native method: ${method}`);
     }
@@ -128,6 +163,117 @@ const open: Extract<ProviderInput, { type: "session.open" }> = {
 };
 
 describe("shared-thread provider", () => {
+  it("offers Codex's model list and applies a choice to the native thread", async () => {
+    const daemon = new NativeDaemon();
+    const bridge = createBridgeProvider(
+      async () => "native-turn",
+      visibleQuestions,
+      async () => daemon,
+    );
+    const connection = await bridge.registration.connect({
+      versions: [1],
+      capabilities: [...CAPABILITIES],
+      launch,
+    });
+    const events: ProviderEvent[] = [];
+    connection.onEvent((event) => events.push(event));
+    const configs = () =>
+      events.flatMap((event) => (event.type === "session.config" ? [event.config] : []));
+    try {
+      expect(connection.capabilities).toContain("session.configure");
+      await connection.send({ type: "catalog", requestId: "catalog", cwd: "/tmp" });
+      const catalog = events.find((event) => event.type === "catalog");
+      expect(catalog).toMatchObject({
+        requestId: "catalog",
+        catalog: {
+          defaultModel: "gpt-a",
+          models: [
+            {
+              id: "gpt-a",
+              label: "GPT A",
+              isDefault: true,
+              defaultThinkingOptionId: "medium",
+              thinkingOptions: [
+                { id: "low", label: "Low", description: "Fast" },
+                { id: "medium", label: "Medium", isDefault: true },
+                { id: "xhigh", label: "Xhigh" },
+              ],
+            },
+            { id: "gpt-b", label: "GPT B", defaultThinkingOptionId: "high" },
+          ],
+        },
+      });
+      expect(daemon.calls.find((call) => call.method === "model/list")?.params).toMatchObject({
+        includeHidden: false,
+      });
+
+      await connection.send(open);
+      await bridge.activate("agent-1");
+      expect(configs().at(-1)).toMatchObject({ model: "terminal-model", thinkingOption: "high" });
+      await connection.send({
+        type: "session.configure",
+        requestId: "configure",
+        sessionId: open.sessionId,
+        changes: { model: "gpt-b", thinkingOption: "high" },
+      });
+      expect(events.at(-1)).toEqual({ type: "request.completed", requestId: "configure" });
+      expect(daemon.calls.at(-1)).toEqual({
+        method: "thread/settings/update",
+        params: { threadId, model: "gpt-b", effort: "high" },
+      });
+      expect(configs().at(-1)).toMatchObject({ model: "gpt-b", thinkingOption: "high" });
+
+      // A choice made in the Codex terminal reaches Paseo too.
+      daemon.emit("thread/settings/updated", {
+        threadId,
+        threadSettings: { model: "gpt-a", effort: "low", cwd: "/tmp" },
+      });
+      expect(configs().at(-1)).toMatchObject({ model: "gpt-a", thinkingOption: "low" });
+
+      await connection.send({
+        type: "session.configure",
+        requestId: "mode",
+        sessionId: open.sessionId,
+        changes: { mode: "plan" },
+      });
+      expect(events.at(-1)).toMatchObject({ type: "request.failed", requestId: "mode" });
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("keeps the provider usable with no model choices when Codex cannot list models", async () => {
+    const daemon = new NativeDaemon();
+    const original = daemon.request.bind(daemon);
+    daemon.request = async (method, params) => {
+      if (method === "model/list") throw new RpcResponseError(-32601, "Method not found");
+      return original(method, params);
+    };
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const bridge = createBridgeProvider(
+      async () => "native-turn",
+      visibleQuestions,
+      async () => daemon,
+    );
+    const connection = await bridge.registration.connect({
+      versions: [1],
+      capabilities: [...CAPABILITIES],
+      launch,
+    });
+    const events: ProviderEvent[] = [];
+    connection.onEvent((event) => events.push(event));
+    try {
+      await connection.send({ type: "catalog", requestId: "catalog" });
+      expect(events).toEqual([
+        { type: "catalog", requestId: "catalog", catalog: { models: [], modes: [] } },
+      ]);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("Codex model list unavailable"));
+    } finally {
+      warn.mockRestore();
+      await connection.close();
+    }
+  });
+
   it("streams full historical payloads larger than its former snapshot budget and keeps live updates", async () => {
     const daemon = new NativeDaemon();
     const itemCount = 110;

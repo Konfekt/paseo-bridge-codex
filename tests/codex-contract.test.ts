@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { execCommand, spawnProcess, terminateProcess } from "@getpaseo/plugin/server";
 import { expect, onTestFinished, test } from "vitest";
+import { readModelCatalog } from "../src/models.js";
 import {
   CODEX_TESTED_VERSION,
   isSupportedCodexVersion,
@@ -233,6 +234,24 @@ test("released Codex shares a durable CLI thread across official proxies without
     expect(resumed.model).toBe(started.model);
     expect(resumed.sandbox).toEqual(started.sandbox);
     expect(resumed.approvalPolicy).toEqual(started.approvalPolicy);
+    // The model picker: Codex's list, and a choice applied to the shared thread.
+    const models = await readModelCatalog(bridge);
+    expect(models.models.length).toBeGreaterThan(1);
+    const other = models.models.find((model) => model.id !== started.model);
+    if (!other) throw new Error("Codex listed no alternative model");
+    const settingsUpdated = new Promise<unknown>((resolve) => {
+      terminal.onMessage((message) => {
+        if (message.method === "thread/settings/updated") resolve(message.params);
+      });
+    });
+    await bridge.request("thread/settings/update", {
+      threadId: started.thread.id,
+      model: other.id,
+    });
+    expect(await settingsUpdated).toMatchObject({
+      threadId: started.thread.id,
+      threadSettings: { model: other.id },
+    });
     const turns = (await bridge.request("thread/turns/list", {
       threadId: started.thread.id,
       limit: 100,

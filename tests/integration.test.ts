@@ -212,7 +212,26 @@ test("plugin lifecycle discovers, restores and steers terminal threads without a
           result = { turn: { id: latestTurnId, status: "inProgress", error: null } };
           break;
         case "thread/unsubscribe":
+        case "thread/settings/update":
           result = {};
+          break;
+        case "model/list":
+          result = {
+            data: ["gpt-a", "gpt-b"].map((model, index) => ({
+              id: model,
+              model,
+              displayName: model.toUpperCase(),
+              description: "",
+              hidden: false,
+              isDefault: index === 0,
+              defaultReasoningEffort: "medium",
+              supportedReasoningEfforts: [
+                { reasoningEffort: "low", description: "" },
+                { reasoningEffort: "medium", description: "" },
+              ],
+            })),
+            nextCursor: null,
+          };
           break;
         default:
           socket.send(
@@ -382,6 +401,13 @@ test("plugin lifecycle discovers, restores and steers terminal threads without a
         .map((entry) => entry.seqStart),
     );
     expect(recordLocations.size).toBe(1);
+    // The app's model picker lists Codex's models and changes the native thread's model.
+    const listed = await client.listProviderModels("codex-terminal", { cwd: root });
+    expect(listed.models?.map((model) => model.id)).toEqual(["gpt-a", "gpt-b"]);
+    await client.setAgentModel(agentId, "gpt-b");
+    await expect
+      .poll(() => requests.find((request) => request.method === "thread/settings/update"))
+      .toMatchObject({ params: { threadId: thread.id, model: "gpt-b" } });
     await client.sendMessage(agentId, "Keep the current approach", { activeTurnBehavior: "steer" });
     await expect
       .poll(() => requests.find((request) => request.method === "turn/steer"))
