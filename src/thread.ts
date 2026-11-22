@@ -318,6 +318,15 @@ export class AttachedThread {
     const rpc = this.rpc;
     if (!rpc || this.hydrating || this.closed)
       throw new Error("Codex attachment is disconnected or synchronizing; operation was not sent");
+    if (input.type === "session.interrupt") {
+      // Paseo refuses to stop or replace the agent unless Stop is answered within two seconds,
+      // so it never waits behind, or is refused by, a pending prompt or permission answer.
+      this.cancelSideQuestions();
+      const turnId = this.activeTurn?.id;
+      if (turnId) await rpc.request("turn/interrupt", { threadId: this.threadId, turnId });
+      this.turnRevision++;
+      return;
+    }
     if (this.mutationPending) throw new Error("Another operation is pending on this attachment");
     this.mutationPending = true;
     this.turnRevision++;
@@ -362,13 +371,6 @@ export class AttachedThread {
         } else {
           throw new Error("Permission already resolved or belongs to another attachment");
         }
-      } else if (input.type === "session.interrupt") {
-        this.cancelSideQuestions();
-        if (this.activeTurn)
-          await rpc.request("turn/interrupt", {
-            threadId: this.threadId,
-            turnId: this.activeTurn.id,
-          });
       }
       const route =
         input.type === "session.prompt" && prompt ? commandRoute(prompt.input) : undefined;

@@ -2502,6 +2502,36 @@ describe("slash commands", () => {
     }
   });
 
+  // Paseo refuses to stop or replace the agent unless its interrupt is answered within two
+  // seconds, so Stop must not wait behind, or be refused by, another pending operation.
+  it("interrupts the native turn while a steer is still pending", async () => {
+    let releaseSteer: (value: unknown) => void = () => {};
+    const { connection, events, text, called } = await setup(
+      {
+        "turn/steer": () =>
+          new Promise((resolve) => {
+            releaseSteer = resolve;
+          }),
+      },
+      "native-turn",
+    );
+    try {
+      const steering = text("also check the tests", "steer");
+      await vi.waitFor(() => expect(called("turn/steer")).toHaveLength(1));
+      await connection.send({
+        type: "session.interrupt",
+        requestId: "stop",
+        sessionId: open.sessionId,
+      });
+      expect(events).toContainEqual({ type: "request.completed", requestId: "stop" });
+      expect(called("turn/interrupt").at(-1)?.params).toEqual({ threadId, turnId: "native-turn" });
+      releaseSteer({ turnId: "native-turn" });
+      await steering;
+    } finally {
+      await connection.close();
+    }
+  });
+
   it("answers an idle side question in its own turn, and a Paseo stop cancels it", async () => {
     const answers: Array<(value: unknown) => void> = [];
     const { daemon, connection, command, called } = await setup(
