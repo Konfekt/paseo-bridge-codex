@@ -14,11 +14,11 @@ import {
 
 describe("Codex version gate", () => {
   it("verifies the tested range, accepts newer releases tentatively and rejects older ones", () => {
-    for (const version of ["0.164.0", "0.165.0", "0.169.1", "0.170.0", "0.170.3"])
+    for (const version of ["0.164.0", "0.165.0", "0.169.1", "0.170.0", "0.171.0", "0.171.3"])
       expect(codexSupport(version)).toBe("verified");
     for (const version of [
-      "0.171.0",
-      "0.171.0-alpha.13",
+      "0.172.0",
+      "0.172.0-alpha.13",
       "0.170.0-alpha.4.2",
       "0.165.0-alpha.1.1",
       "1.0.0",
@@ -27,16 +27,16 @@ describe("Codex version gate", () => {
       expect(codexSupport(version)).toBe("tentative");
     for (const version of ["0.163.9", "0.164.0-alpha.11.1", "0.1.2505172116x", "", "latest"])
       expect(codexSupport(version)).toBe("unsupported");
-    expect(isSupportedCodexVersion("0.171.0")).toBe(true);
+    expect(isSupportedCodexVersion("0.172.0")).toBe(true);
     expect(isSupportedCodexVersion("0.163.0")).toBe(false);
   });
 
   it("warns once per component and tentative version", () => {
     const warn = vi.fn();
-    expect(warnTentativeCodex("Codex CLI", "0.170.0", warn)).toBeUndefined();
+    expect(warnTentativeCodex("Codex CLI", "0.171.0", warn)).toBeUndefined();
     const message = warnTentativeCodex("Codex CLI", "0.172.0", warn);
     expect(message).toContain("Codex CLI 0.172.0 is newer than the tested range");
-    expect(message).toContain("0.164.0 to 0.170.x");
+    expect(message).toContain("0.164.0 to 0.171.x");
     warnTentativeCodex("Codex CLI", "0.172.0", warn);
     warnTentativeCodex("Shared Codex daemon", "0.172.0", warn);
     expect(warn).toHaveBeenCalledTimes(2);
@@ -76,13 +76,13 @@ describe("Codex version gate", () => {
 describe("Paseo host version warning", () => {
   it("warns once for newer or pre-release hosts and stays quiet otherwise", () => {
     const warn = vi.fn();
-    for (const version of ["0.14.0", "0.15.4", "0.16.2", "0.16.9", null, undefined, ""])
+    for (const version of ["0.14.0", "0.15.4", "0.16.2", "0.17.1", "0.17.9", null, undefined, ""])
       expect(warnTentativePaseo(version, warn)).toBeUndefined();
-    expect(warnTentativePaseo("0.17.0", warn)).toContain(
-      "Paseo host 0.17.0 is newer than the tested range (0.14.0 to 0.16.x)",
+    expect(warnTentativePaseo("0.18.0", warn)).toContain(
+      "Paseo host 0.18.0 is newer than the tested range (0.14.0 to 0.17.x)",
     );
-    expect(warnTentativePaseo("0.17.0-beta.1", warn)).toContain("is a pre-release");
-    warnTentativePaseo("0.17.0", warn);
+    expect(warnTentativePaseo("0.18.0-beta.1", warn)).toContain("is a pre-release");
+    warnTentativePaseo("0.18.0", warn);
     expect(warn).toHaveBeenCalledTimes(2);
   });
 });

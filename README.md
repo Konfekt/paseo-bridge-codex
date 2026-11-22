@@ -7,8 +7,8 @@ The package supplies a **Codex Terminal** provider (`codex-terminal`) and one pl
 ## Setup
 
 Supported releases:
-- **Paseo 0.14.0 or newer** (manifest requirement `>=0.14.0`). The plugin's own Paseo helpers are locked to **0.16.2**; the released-host test passes on Paseo 0.16.2, 0.15.4 and 0.14.0. Newer Paseo releases, including betas, are allowed tentatively: discovery logs a warning once per host version (`Paseo host ... is newer than the tested range ...; continuing tentatively`).
-- **Codex 0.164.0 or newer.** **0.164.0 through 0.170.x** is verified. Newer releases and pre-releases are accepted **tentatively**: the bridge logs a warning once per version (`... is newer than the tested range ...` or `... is a pre-release ...`, then `continuing tentatively`) and keeps working instead of refusing. Releases older than 0.164.0, and pre-releases of 0.164.0 itself, are rejected because they lack the app-server methods the bridge uses. See [docs/verification.md](docs/verification.md#checking-a-new-release) for promoting a newer release to verified.
+- **Paseo 0.14.0 or newer** (manifest requirement `>=0.14.0`). The plugin's own Paseo helpers are locked to **0.17.1**; the released-host test passes on Paseo 0.17.1 and 0.16.2. Newer Paseo releases, including betas, are allowed tentatively: discovery logs a warning once per host version (`Paseo host ... is newer than the tested range ...; continuing tentatively`).
+- **Codex 0.164.0 or newer.** **0.164.0 through 0.171.x** is verified. Newer releases and pre-releases are accepted **tentatively**: the bridge logs a warning once per version (`... is newer than the tested range ...` or `... is a pre-release ...`, then `continuing tentatively`) and keeps working instead of refusing. Releases older than 0.164.0, and pre-releases of 0.164.0 itself, are rejected because they lack the app-server methods the bridge uses. See [docs/verification.md](docs/verification.md#checking-a-new-release) for promoting a newer release to verified.
 
 Node.js 22.22 or newer is required. Runtime tests ran on Linux; Windows and macOS have not been verified. The bridge requires Codex's Unix control socket.
 
@@ -87,6 +87,7 @@ Discovery runs inside the Paseo daemon and finds it through `$PASEO_HOME/paseo.p
 | `node server/cli.js once --paseo-home /absolute/path` | Run that pass against the selected local Paseo home using its existing credentials.             |
 | `node server/cli.js --help`                           | Print CLI usage.                                                                                |
 | Send text in Paseo                                    | Start a native turn when idle, or steer the admitted active turn.                               |
+| Type a `/command` in Paseo                            | Run a Codex command through the app-server; see [Slash commands](#slash-commands).              |
 | Hide an async question                                | Remove its Paseo card permanently for this attachment, without sending a native answer.         |
 | Close the terminal                                    | Retain the thread in Paseo.                                                                     |
 | Archive the Paseo entry                               | Exclude it from subsequent discovery passes; release its attachment.                            |
@@ -94,6 +95,35 @@ Discovery runs inside the Paseo daemon and finds it through `$PASEO_HOME/paseo.p
 | Restart Paseo with the plugin enabled                 | Restart discovery and activate saved attachments under their original Paseo agent IDs.          |
 
 After installing the package as a CLI, `paseo-bridge-codex` replaces `node server/cli.js`; its default is one pass. For checkout updates, rebuild and run `paseo plugin reload paseo-bridge-codex`.
+
+## Slash commands
+
+Codex's slash commands belong to its terminal UI; the app-server only offers the operations behind them. The bridge lists the commands below in Paseo's command menu and runs each through the matching app-server method. None of them reaches the model as text.
+
+| Command                                                     | Effect                                                                                                            | App-server method                                                     |
+| ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `/btw <question>`, `/side <question>`                       | Answer a quick question from the thread's context. The question and answer are not added to the thread.           | `thread/sample`                                                       |
+| `/compact`                                                  | Compact the conversation; Paseo shows the native compaction turn.                                                 | `thread/compact/start`                                                |
+| `/review [base <branch> \| commit <sha> \| <instructions>]` | Review uncommitted changes, a branch diff, a commit, or custom instructions, as a native turn.                    | `review/start`                                                        |
+| `/init`                                                     | Ask Codex to write `AGENTS.md`, with Codex's own prompt. Does nothing if the file exists.                         | `turn/start`                                                          |
+| `/plan [off \| <prompt>]`                                   | Switch to Codex's Plan mode, optionally starting a turn with the prompt; `/plan off` returns to the default mode. | `thread/settings/update`                                              |
+| `/rename <name>`                                            | Rename the thread.                                                                                                | `thread/name/set`                                                     |
+| `/goal [<objective> \| pause \| resume \| done \| clear]`   | Show, set or change the thread's goal. An active goal makes Codex continue on its own, as in the terminal.        | `thread/goal/*`                                                       |
+| `/status`                                                   | Show the thread, directory, model, reasoning effort, goal and last token usage.                                   | `thread/goal/get`                                                     |
+| `/usage`                                                    | Show account rate limits. Needs a signed-in Codex account.                                                        | `account/rateLimits/read`                                             |
+| `/permissions [<profile>]`                                  | List permission profiles, or choose one for the next turns (`workspace` matches `:workspace`).                    | `permissionProfile/list`, `thread/settings/update`                    |
+| `/memories on\|off`                                         | Turn memory use on or off for the thread.                                                                         | `thread/memoryMode/set`                                               |
+| `/mcp`, `/skills`, `/hooks`, `/plugins`                     | List MCP servers and tools, skills, lifecycle hooks, or plugins.                                                  | `mcpServerStatus/list`, `skills/list`, `hooks/list`, `plugin/list`    |
+| `/ps`, `/stop` (`/clean`)                                   | List or stop the thread's background terminals.                                                                   | `thread/backgroundTerminals/list`, `thread/backgroundTerminals/clean` |
+
+How answers appear:
+- When the thread is idle, an answer is a short turn of its own in Paseo. A failure, such as `/usage` without a signed-in account, shows as an error and starts nothing.
+- During a running turn, Paseo sends a typed command as steering. The bridge answers it inside the running turn and neither steers nor interrupts it. Commands that start a native turn (`/compact`, `/review`, `/init`, `/plan <prompt>`) ask you to wait for the turn to end or stop it.
+- If Paseo is set to interrupt the running turn for new messages, Paseo stops the turn before the command arrives. That is Paseo's choice, not the bridge's.
+- Command answers live only in Paseo's timeline. Codex does not store them, so they disappear when Paseo reloads the thread's history.
+- `/btw` runs one model request without tools, using the thread's model. Asking during a running turn needs Codex 0.171 or newer; older releases answer with an error until the turn ends. Paseo's stop button cancels a side question asked while the thread is idle.
+
+Other Codex terminal commands, such as `/diff`, `/model`, `/new`, `/resume`, `/fork`, `/copy` and `/quit`, are rejected with a message that names the Paseo alternative (for example "Use Paseo's diff view."). `/new`, `/clear`, `/resume` and `/fork` would move the terminal to another thread, which Paseo cannot follow, so start or fork the session in the terminal and let Paseo import it. Names Codex does not define, such as a path like `/tmp/log`, still reach the model as text.
 
 ## Limits and recovery
 

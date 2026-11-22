@@ -215,6 +215,9 @@ test("plugin lifecycle discovers, restores and steers terminal threads without a
         case "thread/settings/update":
           result = {};
           break;
+        case "thread/goal/get":
+          result = { goal: { objective: "Integration goal", status: "active" } };
+          break;
         case "model/list":
           result = {
             data: ["gpt-a", "gpt-b"].map((model, index) => ({
@@ -412,6 +415,23 @@ test("plugin lifecycle discovers, restores and steers terminal threads without a
     await expect
       .poll(() => requests.find((request) => request.method === "turn/steer"))
       .toMatchObject({ params: { threadId: thread.id, expectedTurnId: "native-turn" } });
+    // Paseo lists the bridge's commands; one typed during the native turn is answered by the
+    // bridge without steering or interrupting that turn.
+    const commands = (await client.listCommands(agentId)).commands.map((command) => command.name);
+    expect(commands).toEqual(expect.arrayContaining(["btw", "compact", "review", "status"]));
+    const steersBefore = requests.filter((request) => request.method === "turn/steer").length;
+    await client.sendMessage(agentId, "/status", { activeTurnBehavior: "steer" });
+    await expect
+      .poll(async () => JSON.stringify(await connectedClient.fetchAgentTimeline(agentId)))
+      .toContain("Goal (active): Integration goal");
+    await client.sendMessage(agentId, "/diff", { activeTurnBehavior: "steer" });
+    await expect
+      .poll(async () => JSON.stringify(await connectedClient.fetchAgentTimeline(agentId)))
+      .toContain("/diff is a Codex terminal command and is not available from Paseo.");
+    expect(requests.filter((request) => request.method === "turn/steer")).toHaveLength(
+      steersBefore,
+    );
+    expect(requests.some((request) => request.method === "turn/interrupt")).toBe(false);
     for (const socket of native.clients)
       socket.send(
         JSON.stringify({
