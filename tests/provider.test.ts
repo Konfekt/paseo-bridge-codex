@@ -1970,19 +1970,21 @@ describe("shared-thread provider", () => {
       "codex_cli_rs/0.169.0 (Ubuntu 24.4.0; x86_64) xterm-256color (paseo_bridge_codex; 0.1.0)",
       "codex_cli_rs/0.170.0 (Linux)",
       "codex_cli_rs/0.171.0 (Linux)",
-      "codex_cli_rs/0.172.0-alpha.1 (Linux)",
+      "codex_cli_rs/0.172.0 (Linux)",
+      "codex_cli_rs/0.173.0-alpha.1 (Linux)",
     ]) {
       const result = (await listWith(userAgent)).find((event) => event.type === "sessions");
       expect(result?.sessions.map((session) => session.persistence)).toEqual([open.persistence]);
     }
     expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining("Shared Codex daemon 0.171.0 is newer than the tested range"),
+      expect.stringContaining("Shared Codex daemon 0.172.0 is newer than the tested range"),
     );
     expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining("Shared Codex daemon 0.172.0-alpha.1 is a pre-release"),
+      expect.stringContaining("Shared Codex daemon 0.173.0-alpha.1 is a pre-release"),
     );
     expect(warn).not.toHaveBeenCalledWith(expect.stringContaining("0.169.0"));
     expect(warn).not.toHaveBeenCalledWith(expect.stringContaining("0.170.0"));
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining("0.171.0"));
     for (const userAgent of [
       "codex_cli_rs/0.163.0 (Linux)",
       "codex_cli_rs/0.164.0-alpha.11.1 (Linux)",
@@ -2188,6 +2190,379 @@ describe("shared-thread provider", () => {
         },
       });
       expect(daemon.calls.some((call) => call.method === "thread/start")).toBe(false);
+    } finally {
+      await connection.close();
+    }
+  });
+});
+
+describe("slash commands", () => {
+  type Handler = (params: Record<string, unknown>) => unknown;
+  const setup = async (handlers: Record<string, Handler>, activeTurn: string | null) => {
+    const daemon = new NativeDaemon();
+    daemon.activeTurn = activeTurn;
+    const original = daemon.request.bind(daemon);
+    daemon.request = async (method, params) => {
+      const handler = handlers[method];
+      if (!handler) return original(method, params);
+      daemon.calls.push({ method, params });
+      return handler(params as Record<string, unknown>);
+    };
+    const bridge = createBridgeProvider(
+      async () => activeTurn,
+      visibleQuestions,
+      async () => daemon,
+    );
+    const connection = await bridge.registration.connect({
+      versions: [1],
+      capabilities: [...CAPABILITIES],
+      launch,
+    });
+    const events: ProviderEvent[] = [];
+    connection.onEvent((event) => events.push(event));
+    await connection.send(open);
+    await bridge.activate("agent-1");
+    let counter = 0;
+    const send = async (
+      input:
+        | { type: "command"; name: string; arguments: string }
+        | { type: "message"; content: Array<{ type: "text"; text: string }> },
+      delivery: "auto" | "steer" = "auto",
+    ) => {
+      const clientMessageId = `prompt-${++counter}`;
+      const from = events.length;
+      await connection.send({
+        type: "session.prompt",
+        sessionId: open.sessionId,
+        prompt: { clientMessageId, delivery, input },
+      });
+      return { clientMessageId, events: () => events.slice(from) };
+    };
+    const command = (name: string, args = "") => send({ type: "command", name, arguments: args });
+    const text = (value: string, delivery: "auto" | "steer" = "auto") =>
+      send({ type: "message", content: [{ type: "text", text: value }] }, delivery);
+    const called = (method: string) => daemon.calls.filter((call) => call.method === method);
+    return { daemon, connection, events, command, text, called };
+  };
+
+  it("announces its commands and answers them in a turn of their own without the model", async () => {
+    const { connection, events, command, text, called } = await setup(
+      {
+        "thread/name/set": () => ({}),
+        "thread/goal/get": () => ({
+          goal: { objective: "Ship it", status: "active", tokenBudget: null, tokensUsed: 0 },
+        }),
+        "account/rateLimits/read": () => {
+          throw new RpcResponseError(-32600, "codex account authentication required");
+        },
+      },
+      null,
+    );
+    try {
+      expect(CAPABILITIES).toContain("prompt.command");
+      const announced = events.find((event) => event.type === "session.commands");
+      expect(announced).toMatchObject({ sessionId: open.sessionId });
+      if (announced?.type !== "session.commands") throw new Error("No commands announced");
+      expect(announced.commands.map((entry) => entry.name)).toEqual(
+        expect.arrayContaining(["btw", "compact", "review", "status", "goal", "rename"]),
+      );
+
+      const renamed = await command("rename", "Release work");
+      expect(called("thread/name/set").at(-1)?.params).toEqual({
+        threadId,
+        name: "Release work",
+      });
+      const turnId = `paseo-command-${renamed.clientMessageId}`;
+      expect(renamed.events()).toEqual([
+        {
+          type: "session.prompt_result",
+          sessionId: open.sessionId,
+          clientMessageId: renamed.clientMessageId,
+          result: { type: "turn", turnId },
+        },
+        { type: "session.turn", sessionId: open.sessionId, turnId, state: "started" },
+        expect.objectContaining({
+          type: "timeline.item",
+          item: expect.objectContaining({
+            type: "assistant_message",
+            text: 'Renamed the thread to "Release work".',
+          }),
+        }),
+        { type: "session.turn", sessionId: open.sessionId, turnId, state: "completed" },
+      ]);
+
+      const status = await command("status");
+      expect(status.events()).toContainEqual(
+        expect.objectContaining({
+          item: expect.objectContaining({
+            text: expect.stringContaining("Thread: Release work"),
+          }),
+        }),
+      );
+      expect(status.events()).toContainEqual(
+        expect.objectContaining({
+          item: expect.objectContaining({
+            text: expect.stringContaining("Goal (active): Ship it"),
+          }),
+        }),
+      );
+
+      // Typed commands arrive as text when Paseo has not listed them; aliases work too.
+      const goal = await text("/goal");
+      expect(goal.events()).toContainEqual(
+        expect.objectContaining({ result: expect.objectContaining({ type: "turn" }) }),
+      );
+
+      const usage = await command("usage");
+      expect(usage.events()).toEqual([
+        expect.objectContaining({
+          type: "session.prompt_result",
+          result: {
+            type: "failed",
+            error: { message: "RPC error -32600: codex account authentication required" },
+          },
+        }),
+      ]);
+
+      const rejected = await text("/diff");
+      expect(rejected.events()).toEqual([
+        expect.objectContaining({
+          type: "session.prompt_result",
+          result: {
+            type: "failed",
+            error: {
+              message:
+                "/diff is a Codex terminal command and is not available from Paseo. Use Paseo's diff view.",
+            },
+          },
+        }),
+      ]);
+      const missing = await command("rename");
+      expect(missing.events()).toEqual([
+        expect.objectContaining({
+          result: { type: "failed", error: { message: "Name the thread: /rename <name>." } },
+        }),
+      ]);
+      expect(called("turn/start")).toEqual([]);
+      expect(called("turn/steer")).toEqual([]);
+
+      // Ordinary text that merely starts with a path still reaches the model.
+      await text("/tmp/build.log shows an error");
+      expect(called("turn/start")).toHaveLength(1);
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("starts native turns for compact, review, init and plan prompts", async () => {
+    const { daemon, connection, command, called } = await setup(
+      {
+        "thread/compact/start": () => {
+          daemon.emit("turn/started", {
+            threadId,
+            turn: { id: "compact-turn", status: "inProgress", error: null },
+          });
+          return {};
+        },
+        "review/start": () => ({
+          turn: { id: "review-turn", status: "inProgress", items: [], error: null },
+          reviewThreadId: threadId,
+        }),
+        "collaborationMode/list": () => ({
+          data: [
+            { name: "Plan", mode: "plan", model: null, reasoning_effort: "medium" },
+            { name: "Default", mode: "default", model: null, reasoning_effort: null },
+          ],
+        }),
+      },
+      null,
+    );
+    try {
+      const compact = await command("compact");
+      expect(called("thread/compact/start")).toEqual([
+        { method: "thread/compact/start", params: { threadId } },
+      ]);
+      expect(compact.events()).toEqual([
+        expect.objectContaining({ result: { type: "turn", turnId: "compact-turn" } }),
+        expect.objectContaining({ type: "session.turn", turnId: "compact-turn", state: "started" }),
+      ]);
+      daemon.emit("turn/completed", {
+        threadId,
+        turn: { id: "compact-turn", status: "completed", error: null },
+      });
+
+      const review = await command("review", "base main");
+      expect(called("review/start").at(-1)?.params).toEqual({
+        threadId,
+        target: { type: "baseBranch", branch: "main" },
+        delivery: "inline",
+      });
+      expect(review.events()[0]).toMatchObject({
+        result: { type: "turn", turnId: "review-turn" },
+      });
+      daemon.emit("turn/completed", {
+        threadId,
+        turn: { id: "review-turn", status: "completed", error: null },
+      });
+
+      const plan = await command("plan", "Sketch the migration");
+      expect(called("thread/settings/update").at(-1)?.params).toEqual({
+        threadId,
+        collaborationMode: {
+          mode: "plan",
+          settings: {
+            model: "terminal-model",
+            reasoning_effort: "medium",
+            developer_instructions: null,
+          },
+        },
+      });
+      expect(called("turn/start").at(-1)?.params).toMatchObject({
+        input: [{ type: "text", text: "Sketch the migration" }],
+        clientUserMessageId: plan.clientMessageId,
+      });
+      expect(plan.events()[0]).toMatchObject({ result: { type: "turn", turnId: "remote-turn" } });
+      daemon.emit("turn/completed", {
+        threadId,
+        turn: { id: "remote-turn", status: "completed", error: null },
+      });
+
+      const init = await command("init");
+      expect(called("turn/start").at(-1)?.params).toMatchObject({
+        input: [{ type: "text", text: expect.stringContaining("Generate a file named AGENTS.md") }],
+      });
+      expect(init.events()[0]).toMatchObject({ result: { type: "turn" } });
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("answers commands during a native turn as accepted steering, never interrupting it", async () => {
+    let answer: (value: unknown) => void = () => undefined;
+    const { connection, text, command, called } = await setup(
+      {
+        "thread/goal/get": () => ({ goal: null }),
+        "thread/sample": () =>
+          new Promise((resolve) => {
+            answer = resolve;
+          }),
+      },
+      "native-turn",
+    );
+    try {
+      const status = await text("/status", "steer");
+      expect(status.events()).toEqual([
+        expect.objectContaining({ result: { type: "steer", turnId: "native-turn" } }),
+        expect.objectContaining({
+          type: "timeline.item",
+          item: expect.objectContaining({ type: "assistant_message" }),
+        }),
+      ]);
+      const rejected = await text("/diff", "steer");
+      expect(rejected.events()).toEqual([
+        expect.objectContaining({ result: { type: "steer", turnId: "native-turn" } }),
+        expect.objectContaining({
+          item: expect.objectContaining({
+            type: "error",
+            message: expect.stringContaining("/diff is a Codex terminal command"),
+          }),
+        }),
+      ]);
+      const review = await command("review");
+      expect(review.events()[1]).toMatchObject({
+        item: {
+          type: "error",
+          message: expect.stringContaining("Wait for the current Codex turn"),
+        },
+      });
+      expect(called("review/start")).toEqual([]);
+
+      const side = await text("/btw what changed?", "steer");
+      expect(called("thread/sample").at(-1)?.params).toMatchObject({
+        threadId,
+        expectedTurnId: "native-turn",
+        allowInProgressTurn: true,
+        prompt: expect.stringContaining("what changed?"),
+      });
+      expect(side.events()).toEqual([
+        expect.objectContaining({ result: { type: "steer", turnId: "native-turn" } }),
+      ]);
+      answer({ sourceTurnId: "native-turn", responseId: "r", text: "Only the parser." });
+      await vi.waitFor(() =>
+        expect(side.events()).toContainEqual(
+          expect.objectContaining({
+            item: expect.objectContaining({ type: "assistant_message", text: "Only the parser." }),
+          }),
+        ),
+      );
+      expect(called("turn/steer")).toEqual([]);
+      expect(called("turn/interrupt")).toEqual([]);
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("answers an idle side question in its own turn, and a Paseo stop cancels it", async () => {
+    const answers: Array<(value: unknown) => void> = [];
+    const { daemon, connection, command, called } = await setup(
+      {
+        "thread/turns/list": () => ({
+          data: [{ id: "done-turn", status: "completed", items: [], error: null }],
+          nextCursor: null,
+        }),
+        "thread/sample": () =>
+          new Promise((resolve) => {
+            answers.push(resolve);
+          }),
+      },
+      null,
+    );
+    try {
+      const empty = await command("btw");
+      expect(empty.events()[0]).toMatchObject({
+        result: { type: "failed", error: { message: expect.stringContaining("Ask a question") } },
+      });
+
+      const side = await command("btw", "why?");
+      const turnId = `paseo-command-${side.clientMessageId}`;
+      expect(called("thread/sample").at(-1)?.params).toEqual({
+        threadId,
+        expectedTurnId: "done-turn",
+        prompt: expect.stringContaining("why?"),
+      });
+      expect(side.events()).toEqual([
+        expect.objectContaining({ result: { type: "turn", turnId } }),
+        expect.objectContaining({ type: "session.turn", turnId, state: "started" }),
+      ]);
+      answers[0]?.({ sourceTurnId: "done-turn", responseId: "r", text: null });
+      await vi.waitFor(() =>
+        expect(side.events().at(-1)).toMatchObject({ turnId, state: "completed" }),
+      );
+      expect(side.events()).toContainEqual(
+        expect.objectContaining({
+          item: expect.objectContaining({
+            type: "error",
+            message: expect.stringContaining("tried to use a tool"),
+          }),
+        }),
+      );
+
+      const stopped = await command("side", "and now?");
+      const stoppedTurn = `paseo-command-${stopped.clientMessageId}`;
+      await connection.send({
+        type: "session.interrupt",
+        requestId: "stop",
+        sessionId: open.sessionId,
+      });
+      expect(stopped.events()).toContainEqual(
+        expect.objectContaining({ turnId: stoppedTurn, state: "canceled" }),
+      );
+      answers[1]?.({ sourceTurnId: "done-turn", responseId: "r", text: "Too late" });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(stopped.events()).not.toContainEqual(
+        expect.objectContaining({ item: expect.objectContaining({ text: "Too late" }) }),
+      );
+      expect(daemon.calls.filter((call) => call.method === "turn/start")).toEqual([]);
     } finally {
       await connection.close();
     }

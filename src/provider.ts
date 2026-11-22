@@ -11,6 +11,7 @@ import {
   requireProviderCapabilities,
 } from "@getpaseo/plugin/server/provider";
 import { z } from "zod";
+import { BRIDGE_COMMANDS } from "./commands.js";
 import { errorMessage } from "./errors.js";
 import { PROVIDER_ID } from "./ids.js";
 import { readModelCatalog } from "./models.js";
@@ -34,6 +35,7 @@ export { PROVIDER_ID };
 export const AGENT_ID_ENV = "PASEO_BRIDGE_CODEX_AGENT_ID";
 export const CAPABILITIES = [
   "prompt.message",
+  "prompt.command",
   "prompt.steer",
   "session.list",
   "session.persistence",
@@ -347,6 +349,11 @@ function connection(
         restoration: "core",
         persistence: pointer,
         cwd: input.config.cwd,
+      });
+      emit({
+        type: "session.commands",
+        sessionId: input.sessionId,
+        commands: [...BRIDGE_COMMANDS],
       });
       try {
         await thread.hydrate(client);

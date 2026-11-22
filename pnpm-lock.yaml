@@ -208,17 +208,17 @@ importers:
   .:
     dependencies:
       "@getpaseo/client":
-        specifier: 0.16.2
-        version: 0.16.2
+        specifier: 0.17.1
+        version: 0.17.1
       "@getpaseo/plugin":
-        specifier: 0.16.2
-        version: 0.16.2(@getpaseo/client@0.16.2)(@getpaseo/protocol@0.16.2)(react@19.3.1)(typescript@7.0.2)(zod@4.6.7)
+        specifier: 0.17.1
+        version: 0.17.1(@getpaseo/client@0.17.1)(@getpaseo/protocol@0.17.1)(react@19.3.1)(typescript@7.0.2)(zod@4.6.7)
       "@getpaseo/protocol":
-        specifier: 0.16.2
-        version: 0.16.2
+        specifier: 0.17.1
+        version: 0.17.1
       "@getpaseo/server":
-        specifier: 0.16.2
-        version: 0.16.2(@xterm/xterm@6.1.0-beta.337)(effect@4.0.0-rc.112)(react@19.3.1)
+        specifier: 0.17.1
+        version: 0.17.1(@xterm/xterm@6.1.0-beta.337)(effect@4.0.0-rc.112)(react@19.3.1)
       ws:
         specifier: 8.22.0
         version: 8.22.0
@@ -230,8 +230,8 @@ importers:
         specifier: 2.6.2
         version: 2.6.2
       "@openai/codex":
-        specifier: 0.170.0
-        version: 0.170.0
+        specifier: 0.171.0
+        version: 0.171.0
       "@tsconfig/strictest":
         specifier: 2.0.8
         version: 2.0.8
@@ -754,26 +754,26 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  "@getpaseo/client@0.16.2":
+  "@getpaseo/client@0.17.1":
     resolution:
       {
-        integrity: sha512-Pr7yOn6/F4iJ1GuUdEgnG1W4T1ChsRoV/u49mCzb1xRrQzanNtSIWu7IGQojZ+r0Jclmw3KKWL7+Y0HFKwMFAQ==,
+        integrity: sha512-wAG5mIVK0gUymzRFvLJFqXDndPCKIq25f86Y/Hh/ak1D8OD/LiDl6q0Fr2BPatbLJRscS8gXq5C70lbFZ3MMag==,
       }
 
-  "@getpaseo/highlight@0.16.2":
+  "@getpaseo/highlight@0.17.1":
     resolution:
       {
-        integrity: sha512-9giynF4IulAC3ehwToR/7SUZFFNwqJe/LiBdVxCw2mcCiUEPkTsuDBUEgxw/M0ndMYuG6JWt1PeGA13i986jbA==,
+        integrity: sha512-/OoY1hrolbGNtolMSjfgJvXbloWgVe6X9xhlGYvTACoIb5GokFvf7AQb1f6N5QKH6xiILXZYKEyy8+jtFAa4GA==,
       }
 
-  "@getpaseo/plugin@0.16.2":
+  "@getpaseo/plugin@0.17.1":
     resolution:
       {
-        integrity: sha512-ZMIF4yyhe2kvmOswrsqDGmV33fSQo6f1Y8i99AmOGaHp/G1RM2WSwVFuK9iZJimVm5OHKWA+UdsAux613VgFGA==,
+        integrity: sha512-CSHAbz1VJDePMP4hMRg/bhEERejYt3QVhcwPDkyEAC0wcy8UT84+J1iur8nITMSOC63eqfBGBaZg0nuuN1LOyQ==,
       }
     peerDependencies:
-      "@getpaseo/client": 0.16.2
-      "@getpaseo/protocol": 0.16.2
+      "@getpaseo/client": 0.17.1
+      "@getpaseo/protocol": 0.17.1
       react: ">=19.1.0 <20"
       react-native: ">=0.81.5"
       zod: ^4.4.3
@@ -781,22 +781,22 @@ packages:
       react-native:
         optional: true
 
-  "@getpaseo/protocol@0.16.2":
+  "@getpaseo/protocol@0.17.1":
     resolution:
       {
-        integrity: sha512-+ry4JoCfS5rKO3hjph4gFolrqtaDl43bQKwULn5FvWZpSrBp7c412hfB0JmmlD8GUiHZ06x/eYBzMD003aAaYg==,
+        integrity: sha512-lKonGktprQXIBPr89vvljejrRfI2W2prHpuwZ5LfjVtfRGdikQyikgEG24s5O3oAN0w4aD8SDFGchzBtIYSFyQ==,
       }
 
-  "@getpaseo/relay@0.16.2":
+  "@getpaseo/relay@0.17.1":
     resolution:
       {
-        integrity: sha512-7CtW77ZmuGKDY1n8JObsWxJ6aGIpVdmTjlul/0tF+gahblxnuK1+LXKvNafJ2006/ME5g0AgB5QkWSRzTExGwg==,
+        integrity: sha512-sMzT/oHsc+U5Y58w0aeLKcjcMcqTBvguJyVyvFfrrSMP2b2lGYQ2Ptq5zwdN50ZdBT13La0yfOW8qOTKtYQa4w==,
       }
 
-  "@getpaseo/server@0.16.2":
+  "@getpaseo/server@0.17.1":
     resolution:
       {
-        integrity: sha512-Gl2oc6b1CWmEpJcwKw7oVBU9L4X8JIoxDvbhGLTkIjw+A4b2mB625KfEWqFYPm0xPdVWaDsDcQ3P24n0uYFNzA==,
+        integrity: sha512-9BRrBhDEV5QxXrmTgdx3rX/ZSwedahFGJNXQ9tOqzOg1UmiAcSvb/jsfZFNc63zb89YJHLkgkBeqJc5fRuW28Q==,
       }
 
   "@hono/node-server@1.19.17":
@@ -1018,63 +1018,63 @@ packages:
       }
     engines: { node: ">= 20.19.0" }
 
-  "@openai/codex@0.170.0":
+  "@openai/codex@0.171.0":
     resolution:
       {
-        integrity: sha512-dwoughgqjiik++CFaNkjQ5y6pJO6LUzu5P1z8Hy4LUeJ+aIYcX/QO1P5rOQnHmBG4agOM7Y+hc4LtVo/a4GFiw==,
+        integrity: sha512-1IOFzL2Xg86tLdw6kDo3GoKbkQENgQi7TI6rlEvN132R7ngSw7SNOIQoTcnKzSZZ8kf9N9GynCweSoaFbqk2Eg==,
       }
     engines: { node: ">=16" }
     hasBin: true
 
-  "@openai/codex@0.170.0-darwin-arm64":
+  "@openai/codex@0.171.0-darwin-arm64":
     resolution:
       {
-        integrity: sha512-sQyOGJabAUTEWCKe1O6GNsE7NKnHCHSjzLrazfYUgw8OFsFDeAQGVEwzvpXTK1yW1hJiLLAMRzC/W2Vu7m9DwQ==,
+        integrity: sha512-hIYTkRUpuYpkVfTq4cpby0PXqhAVcIgE7f6FoyY1lt2RyARj3GXS1Can/dIYUBItVhXzhb98HYHZNzCX74QRlQ==,
       }
     engines: { node: ">=16" }
     cpu: [arm64]
     os: [darwin]
 
-  "@openai/codex@0.170.0-darwin-x64":
+  "@openai/codex@0.171.0-darwin-x64":
     resolution:
       {
-        integrity: sha512-lniwntVB9YaCQNNaTgpLxVvABkrnZDCO/UZf3z7POwH71ikkVNi7NxBrfl6aSIS9b3UBJKxjPlAm3qeIxINJVg==,
+        integrity: sha512-pwN5uNEKx/mZjwBEf/6CKq6SJMfJS5kruV3sJQAk7ebIPvC58Ote3CicIxETDZtjLj35rNv3PLPd7mHCg6hGPw==,
       }
     engines: { node: ">=16" }
     cpu: [x64]
     os: [darwin]
 
-  "@openai/codex@0.170.0-linux-arm64":
+  "@openai/codex@0.171.0-linux-arm64":
     resolution:
       {
-        integrity: sha512-mJLm5eia/GcukCrRfVEnYVD5dOXGE7cmpd9dJ/ixkSiKifzDAPaGq83ZEmwVhk3PxbdTPUSLRpnXZQKbNS5HoA==,
+        integrity: sha512-9z17t4bbUJ9UCIb49O4PoA+ki+45q3rd8nZ8PeH6sYnlKkBld/Xpo/OS3h3Ti954+foshX4o7k5TCU8N7zzqQA==,
       }
     engines: { node: ">=16" }
     cpu: [arm64]
     os: [linux]
 
-  "@openai/codex@0.170.0-linux-x64":
+  "@openai/codex@0.171.0-linux-x64":
     resolution:
       {
-        integrity: sha512-6cCZJaZL17tiTAvhd1Pirt8vsV1dP8CfG94+IHygUO4m24oYLQrIInJJLyKzcMv/uUonbu1dF2JmcXhA/s5bsg==,
+        integrity: sha512-l66NZkQgdk2C3pbcfULDz42yEUB581MVA6I+Y43Wp4OIqEy73HCdmZ0GTjeAHY2ycuH4N00d9VsLrwT1jxshTw==,
       }
     engines: { node: ">=16" }
     cpu: [x64]
     os: [linux]
 
-  "@openai/codex@0.170.0-win32-arm64":
+  "@openai/codex@0.171.0-win32-arm64":
     resolution:
       {
-        integrity: sha512-VSfDt/Y/RYqeT+9gCwmIO1kEj7bF7RYQdhanhMWQqWpZBdPLrF19z2z8JbL+Gt/amE7A1d/Rt2g/p44DLrDhFg==,
+        integrity: sha512-kkavDHtAkkNaYtO7eBw4IdBbE/PsWP+Ezp9JXcr/mBu/Cc7EevzFVIVC3sZYvWsF9xuvyjIUv9CKeN0LU0+N9Q==,
       }
     engines: { node: ">=16" }
     cpu: [arm64]
     os: [win32]
 
-  "@openai/codex@0.170.0-win32-x64":
+  "@openai/codex@0.171.0-win32-x64":
     resolution:
       {
-        integrity: sha512-eNlCGvSTKMegqo1R0PPfAf0jOQp8OGfWH8WX2UyTtRN6E/YOecJnz4n1X9lIb02O8Zda/Lv6/WST7+8mufTVSw==,
+        integrity: sha512-HKWBK25tLQxdEg6svw0CrBf+v0bQhRyF8EBVdNqeRxErqpfFa/dfSar6r3sJt6tyPqozOtgz2BH8B2G3n/+gnQ==,
       }
     engines: { node: ">=16" }
     cpu: [x64]
@@ -3774,17 +3774,17 @@ snapshots:
   "@esbuild/win32-x64@0.25.12":
     optional: true
 
-  "@getpaseo/client@0.16.2":
+  "@getpaseo/client@0.17.1":
     dependencies:
-      "@getpaseo/protocol": 0.16.2
-      "@getpaseo/relay": 0.16.2
+      "@getpaseo/protocol": 0.17.1
+      "@getpaseo/relay": 0.17.1
       ws: 8.22.0
       zod: 4.6.7
     transitivePeerDependencies:
       - bufferutil
       - utf-8-validate
 
-  "@getpaseo/highlight@0.16.2":
+  "@getpaseo/highlight@0.17.1":
     dependencies:
       "@codemirror/language": 6.12.4
       "@codemirror/legacy-modes": 6.5.5
@@ -3806,11 +3806,11 @@ snapshots:
       "@lezer/yaml": 1.0.4
       lezer-elixir: 1.1.3
 
-  "@getpaseo/plugin@0.16.2(@getpaseo/client@0.16.2)(@getpaseo/protocol@0.16.2)(react@19.3.1)(typescript@5.9.3)(zod@4.6.7)":
+  "@getpaseo/plugin@0.17.1(@getpaseo/client@0.17.1)(@getpaseo/protocol@0.17.1)(react@19.3.1)(typescript@5.9.3)(zod@4.6.7)":
     dependencies:
       "@agentclientprotocol/sdk": 1.9.0(zod@4.6.7)
-      "@getpaseo/client": 0.16.2
-      "@getpaseo/protocol": 0.16.2
+      "@getpaseo/client": 0.17.1
+      "@getpaseo/protocol": 0.17.1
       i18next: 26.5.8(typescript@5.9.3)
       react: 19.3.1
       use-sync-external-store: 1.7.0(react@19.3.1)
@@ -3818,11 +3818,11 @@ snapshots:
     transitivePeerDependencies:
       - typescript
 
-  "@getpaseo/plugin@0.16.2(@getpaseo/client@0.16.2)(@getpaseo/protocol@0.16.2)(react@19.3.1)(typescript@7.0.2)(zod@4.6.7)":
+  "@getpaseo/plugin@0.17.1(@getpaseo/client@0.17.1)(@getpaseo/protocol@0.17.1)(react@19.3.1)(typescript@7.0.2)(zod@4.6.7)":
     dependencies:
       "@agentclientprotocol/sdk": 1.9.0(zod@4.6.7)
-      "@getpaseo/client": 0.16.2
-      "@getpaseo/protocol": 0.16.2
+      "@getpaseo/client": 0.17.1
+      "@getpaseo/protocol": 0.17.1
       i18next: 26.5.8(typescript@7.0.2)
       react: 19.3.1
       use-sync-external-store: 1.7.0(react@19.3.1)
@@ -3830,12 +3830,12 @@ snapshots:
     transitivePeerDependencies:
       - typescript
 
-  "@getpaseo/protocol@0.16.2":
+  "@getpaseo/protocol@0.17.1":
     dependencies:
       semver: 7.8.5
       zod: 4.6.7
 
-  "@getpaseo/relay@0.16.2":
+  "@getpaseo/relay@0.17.1":
     dependencies:
       "@noble/ciphers": 2.4.0
       "@noble/curves": 2.4.0
@@ -3847,16 +3847,16 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
-  "@getpaseo/server@0.16.2(@xterm/xterm@6.1.0-beta.337)(effect@4.0.0-rc.112)(react@19.3.1)":
+  "@getpaseo/server@0.17.1(@xterm/xterm@6.1.0-beta.337)(effect@4.0.0-rc.112)(react@19.3.1)":
     dependencies:
       "@agentclientprotocol/sdk": 0.17.1(zod@4.6.7)
       "@anthropic-ai/claude-agent-sdk": 0.3.326(@anthropic-ai/sdk@0.104.2(zod@4.6.7))(@modelcontextprotocol/sdk@1.29.0(zod@4.6.7))(zod@4.6.7)
       "@anthropic-ai/sdk": 0.104.2(zod@4.6.7)
-      "@getpaseo/client": 0.16.2
-      "@getpaseo/highlight": 0.16.2
-      "@getpaseo/plugin": 0.16.2(@getpaseo/client@0.16.2)(@getpaseo/protocol@0.16.2)(react@19.3.1)(typescript@5.9.3)(zod@4.6.7)
-      "@getpaseo/protocol": 0.16.2
-      "@getpaseo/relay": 0.16.2
+      "@getpaseo/client": 0.17.1
+      "@getpaseo/highlight": 0.17.1
+      "@getpaseo/plugin": 0.17.1(@getpaseo/client@0.17.1)(@getpaseo/protocol@0.17.1)(react@19.3.1)(typescript@5.9.3)(zod@4.6.7)
+      "@getpaseo/protocol": 0.17.1
+      "@getpaseo/relay": 0.17.1
       "@isaacs/ttlcache": 2.1.5
       "@modelcontextprotocol/sdk": 1.29.0(zod@4.6.7)
       "@opencode-ai/sdk": 1.14.46
@@ -4061,31 +4061,31 @@ snapshots:
 
   "@noble/hashes@2.4.0": {}
 
-  "@openai/codex@0.170.0":
+  "@openai/codex@0.171.0":
     optionalDependencies:
-      "@openai/codex-darwin-arm64": "@openai/codex@0.170.0-darwin-arm64"
-      "@openai/codex-darwin-x64": "@openai/codex@0.170.0-darwin-x64"
-      "@openai/codex-linux-arm64": "@openai/codex@0.170.0-linux-arm64"
-      "@openai/codex-linux-x64": "@openai/codex@0.170.0-linux-x64"
-      "@openai/codex-win32-arm64": "@openai/codex@0.170.0-win32-arm64"
-      "@openai/codex-win32-x64": "@openai/codex@0.170.0-win32-x64"
+      "@openai/codex-darwin-arm64": "@openai/codex@0.171.0-darwin-arm64"
+      "@openai/codex-darwin-x64": "@openai/codex@0.171.0-darwin-x64"
+      "@openai/codex-linux-arm64": "@openai/codex@0.171.0-linux-arm64"
+      "@openai/codex-linux-x64": "@openai/codex@0.171.0-linux-x64"
+      "@openai/codex-win32-arm64": "@openai/codex@0.171.0-win32-arm64"
+      "@openai/codex-win32-x64": "@openai/codex@0.171.0-win32-x64"
 
-  "@openai/codex@0.170.0-darwin-arm64":
+  "@openai/codex@0.171.0-darwin-arm64":
     optional: true
 
-  "@openai/codex@0.170.0-darwin-x64":
+  "@openai/codex@0.171.0-darwin-x64":
     optional: true
 
-  "@openai/codex@0.170.0-linux-arm64":
+  "@openai/codex@0.171.0-linux-arm64":
     optional: true
 
-  "@openai/codex@0.170.0-linux-x64":
+  "@openai/codex@0.171.0-linux-x64":
     optional: true
 
-  "@openai/codex@0.170.0-win32-arm64":
+  "@openai/codex@0.171.0-win32-arm64":
     optional: true
 
-  "@openai/codex@0.170.0-win32-x64":
+  "@openai/codex@0.171.0-win32-x64":
     optional: true
 
   "@opencode-ai/sdk@1.14.46":

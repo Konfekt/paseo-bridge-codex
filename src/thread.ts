@@ -1,13 +1,41 @@
 import { createHash, randomUUID } from "node:crypto";
+import { access } from "node:fs/promises";
+import { join } from "node:path";
 import type {
   ProviderConfigChanges,
   ProviderEvent,
   ProviderInput,
   ProviderPermissionRequest,
   ProviderPersistence,
+  ProviderPrompt,
   ProviderTimelineItem,
 } from "@getpaseo/plugin/server/provider";
 import { z } from "zod";
+import {
+  type BridgeCommandName,
+  collaborationModeSettings,
+  formatBackgroundTerminals,
+  formatGoal,
+  formatHooks,
+  formatMcpServers,
+  formatPermissionProfiles,
+  formatPlugins,
+  formatRateLimits,
+  formatSkills,
+  formatStatus,
+  INIT_PROMPT,
+  parseGoalArgs,
+  parseReviewTarget,
+  parseToggle,
+  parseTokenUsage,
+  permissionProfiles,
+  pickPermissionProfile,
+  routeCommand,
+  routeText,
+  type SlashRoute,
+  sideQuestionPrompt,
+  type TokenUsage,
+} from "./commands.js";
 import { errorMessage } from "./errors.js";
 import { permissionId, permissionResult, projectPermission } from "./permissions.js";
 import {
@@ -35,6 +63,10 @@ const MAX_DIRTY_TURNS = 128;
 const MAX_FINGERPRINT_BYTES = 64 * 1024 * 1024;
 const MAX_PENDING_SNAPSHOT_BYTES = 8 * 1024 * 1024;
 type Snapshot = { item: ProviderTimelineItem; timestamp?: string };
+type CommandAnswer = { text: string } | { error: string };
+type SideQuestion = { turnId: string; canceled: boolean };
+/** Commands that start a native Codex turn, so they wait for an active turn to end. */
+const TURN_COMMANDS: ReadonlySet<BridgeCommandName> = new Set(["compact", "review", "init"]);
 type PendingPermission = {
   id: string | number;
   method: string;
@@ -69,6 +101,11 @@ export class AttachedThread {
   // Native model settings, published to Paseo as the session configuration.
   private model: string | null = null;
   private effort: string | null = null;
+  private cwd = "";
+  private name: string | null = null;
+  private tokenUsage: TokenUsage | undefined;
+  // Side questions answered in a bridge-made turn, which a Paseo stop cancels.
+  private readonly sideQuestions = new Set<SideQuestion>();
 
   constructor(
     readonly sessionId: string,
@@ -123,6 +160,8 @@ export class AttachedThread {
       this.activeTurn = latest?.status === "inProgress" ? latest : undefined;
     this.synchronizeQuestions(questions.pending());
     await this.refresh();
+    this.cwd = response.thread.cwd;
+    this.name = response.thread.name;
     this.model = response.model || response.thread.model;
     this.effort =
       response.reasoningEffort === undefined
@@ -245,6 +284,11 @@ export class AttachedThread {
         this.effort = nextEffort;
         if (!this.hydrating) this.emitConfig();
       }
+    } else if (message.method === "thread/tokenUsage/updated") {
+      this.tokenUsage = parseTokenUsage(params["tokenUsage"]) ?? this.tokenUsage;
+    } else if (message.method === "thread/name/updated") {
+      const name = z.string().nullish().safeParse(params["threadName"]);
+      if (name.success) this.name = name.data ?? null;
     } else if (message.method === "serverRequest/resolved") {
       const id = permissionId(z.union([z.string(), z.number()]).parse(params["requestId"]));
       if (this.permissions.delete(id) && this.activated) this.emitResolved(id);
@@ -319,13 +363,18 @@ export class AttachedThread {
           throw new Error("Permission already resolved or belongs to another attachment");
         }
       } else if (input.type === "session.interrupt") {
+        this.cancelSideQuestions();
         if (this.activeTurn)
           await rpc.request("turn/interrupt", {
             threadId: this.threadId,
             turnId: this.activeTurn.id,
           });
       }
-      if (prompt) {
+      const route =
+        input.type === "session.prompt" && prompt ? commandRoute(prompt.input) : undefined;
+      if (prompt && route) {
+        await this.runCommand(rpc, prompt, route);
+      } else if (prompt) {
         if (prompt.input.type !== "message")
           throw new Error("Codex Terminal accepts text prompts only");
         const content = prompt.input.content.map((part) => {
@@ -347,32 +396,18 @@ export class AttachedThread {
               result: { type: "steer", turnId: expectedTurnId },
             });
         } else {
-          const params = {
-            threadId: this.threadId,
-            input: content,
-            clientUserMessageId: prompt.clientMessageId,
-          };
-          this.pendingStartEvents = [];
-          const result = z
-            .object({ turn: turnSchema })
-            .parse(await rpc.request("turn/start", params));
-          const events = this.pendingStartEvents;
-          this.pendingStartEvents = undefined;
-          sentTurnId = result.turn.id;
-          if (input.type === "session.prompt")
-            this.emit({
-              type: "session.prompt_result",
-              sessionId: this.sessionId,
-              clientMessageId: prompt.clientMessageId,
-              result: { type: "turn", turnId: result.turn.id },
-            });
-          // Publish acknowledgement before completion, even for a synchronously finished turn.
-          if (events.length) {
-            for (const event of events) this.emitTurn(event);
-          } else {
-            this.activeTurn = result.turn.status === "inProgress" ? result.turn : undefined;
-            if (this.activated) this.emitTurn(result.turn);
-          }
+          const turnId = await this.startNativeTurn(
+            rpc,
+            input.type === "session.prompt" ? prompt.clientMessageId : undefined,
+            "turn/start",
+            {
+              threadId: this.threadId,
+              input: content,
+              clientUserMessageId: prompt.clientMessageId,
+            },
+          );
+          if (!turnId) throw new Error("Codex started no turn");
+          sentTurnId = turnId;
         }
         if (input.type === "session.permission") {
           // Resolve only after the native reply appears in the authoritative snapshot.
@@ -390,6 +425,335 @@ export class AttachedThread {
       this.turnRevision++;
       if (this.turnStateDirty) this.scheduleRefresh();
     }
+  }
+
+  /**
+   * Start a native turn and acknowledge it before publishing its events, even when Codex
+   * finishes it before answering. Returns the started turn, if Codex reported one.
+   */
+  private async startNativeTurn(
+    rpc: RpcClient,
+    clientMessageId: string | undefined,
+    method: string,
+    params: Record<string, unknown>,
+  ): Promise<string | undefined> {
+    this.pendingStartEvents = [];
+    const response = z
+      .object({ turn: turnSchema.optional() })
+      .parse(await rpc.request(method, params));
+    const events = this.pendingStartEvents;
+    this.pendingStartEvents = undefined;
+    // `thread/compact/start` answers without a turn; its turn arrives as a notification.
+    const turn =
+      response.turn ?? events.find((event) => event.status === "inProgress") ?? events[0];
+    if (clientMessageId !== undefined)
+      this.emit({
+        type: "session.prompt_result",
+        sessionId: this.sessionId,
+        clientMessageId,
+        result: turn ? { type: "turn", turnId: turn.id } : { type: "completed" },
+      });
+    if (events.length) {
+      for (const event of events) this.emitTurn(event);
+    } else if (response.turn) {
+      this.activeTurn = response.turn.status === "inProgress" ? response.turn : undefined;
+      if (this.activated) this.emitTurn(response.turn);
+    }
+    return turn?.id;
+  }
+
+  /** Run a Codex slash command for Paseo; failures and rejections never reach the model. */
+  private async runCommand(
+    rpc: RpcClient,
+    prompt: ProviderPrompt,
+    route: SlashRoute,
+  ): Promise<void> {
+    const active = this.activeTurn;
+    if (route.kind === "reject") return this.answerOrFail(prompt, active, { error: route.message });
+    const { name, args } = route;
+    if (name === "btw" || name === "side") return this.askSideQuestion(rpc, prompt, args, active);
+    const startsTurn =
+      TURN_COMMANDS.has(name) || (name === "plan" && args !== "" && args !== "off");
+    if (startsTurn && active)
+      return this.answerOrFail(prompt, active, {
+        error: `Wait for the current Codex turn to finish, or stop it, before /${name}.`,
+      });
+    let answer: CommandAnswer | undefined;
+    try {
+      answer = await this.executeCommand(rpc, prompt, name, args);
+    } catch (error) {
+      answer = { error: errorMessage(error) };
+    }
+    if (answer) this.answerOrFail(prompt, active, answer);
+  }
+
+  /** Returns the answer to show, or nothing when the command started a native turn. */
+  private async executeCommand(
+    rpc: RpcClient,
+    prompt: ProviderPrompt,
+    name: Exclude<BridgeCommandName, "btw" | "side">,
+    args: string,
+  ): Promise<CommandAnswer | undefined> {
+    const threadId = this.threadId;
+    const text = (value: string): CommandAnswer => ({ text: value });
+    const startTurn = async (method: string, params: Record<string, unknown>) => {
+      await this.startNativeTurn(rpc, prompt.clientMessageId, method, { threadId, ...params });
+      return undefined;
+    };
+    const turnInput = (value: string) => ({
+      input: [{ type: "text", text: value, text_elements: [] }],
+      clientUserMessageId: prompt.clientMessageId,
+    });
+    switch (name) {
+      case "compact":
+        return startTurn("thread/compact/start", {});
+      case "review":
+        return startTurn("review/start", { target: parseReviewTarget(args), delivery: "inline" });
+      case "init": {
+        const exists = await access(join(this.cwd, "AGENTS.md")).then(
+          () => true,
+          () => false,
+        );
+        if (exists) return text(`AGENTS.md already exists in ${this.cwd}; /init leaves it as is.`);
+        return startTurn("turn/start", turnInput(INIT_PROMPT));
+      }
+      case "plan": {
+        const mode = args === "off" ? "default" : "plan";
+        const collaborationMode = collaborationModeSettings(
+          await rpc.request("collaborationMode/list", {}),
+          mode,
+          { model: this.model, effort: this.effort },
+        );
+        await rpc.request("thread/settings/update", { threadId, collaborationMode });
+        if (mode === "default") return text("Left Plan mode.");
+        if (!args) return text("Plan mode is on. Leave it with /plan off.");
+        return startTurn("turn/start", turnInput(args));
+      }
+      case "rename": {
+        if (!args) return { error: "Name the thread: /rename <name>." };
+        await rpc.request("thread/name/set", { threadId, name: args });
+        this.name = args;
+        return text(`Renamed the thread to "${args}".`);
+      }
+      case "goal": {
+        const action = parseGoalArgs(args);
+        if (action.type === "show")
+          return text(
+            formatGoal(
+              z
+                .object({ goal: z.unknown() })
+                .parse(await rpc.request("thread/goal/get", { threadId })).goal,
+            ),
+          );
+        if (action.type === "clear") {
+          await rpc.request("thread/goal/clear", { threadId, origin: "user" });
+          return text("Cleared the goal.");
+        }
+        const change =
+          action.type === "status"
+            ? { status: action.status }
+            : { objective: action.objective, status: "active" };
+        const { goal } = z
+          .object({ goal: z.unknown() })
+          .parse(await rpc.request("thread/goal/set", { threadId, origin: "user", ...change }));
+        return text(formatGoal(goal));
+      }
+      case "status": {
+        const { goal } = z
+          .object({ goal: z.unknown() })
+          .parse(await rpc.request("thread/goal/get", { threadId }));
+        return text(
+          formatStatus({
+            threadId,
+            name: this.name,
+            cwd: this.cwd,
+            model: this.model,
+            effort: this.effort,
+            goal,
+            tokenUsage: this.tokenUsage,
+          }),
+        );
+      }
+      case "usage":
+        return text(formatRateLimits(await rpc.request("account/rateLimits/read", null)));
+      case "permissions": {
+        const profiles = permissionProfiles(
+          await rpc.request("permissionProfile/list", { cwd: this.cwd }),
+        );
+        if (!args) return text(formatPermissionProfiles(profiles));
+        const profile = pickPermissionProfile(profiles, args);
+        if (!profile)
+          return {
+            error: `Codex has no permission profile "${args}".\n${formatPermissionProfiles(profiles)}`,
+          };
+        await rpc.request("thread/settings/update", { threadId, permissions: profile });
+        return text(`Permission profile for the next turns: ${profile}.`);
+      }
+      case "memories": {
+        const enabled = parseToggle(args);
+        if (enabled === undefined) return { error: "Choose /memories on or /memories off." };
+        await rpc.request("thread/memoryMode/set", {
+          threadId,
+          mode: enabled ? "enabled" : "disabled",
+        });
+        return text(`Memories are ${enabled ? "on" : "off"} for this thread.`);
+      }
+      case "mcp":
+        return text(formatMcpServers(await rpc.request("mcpServerStatus/list", { threadId })));
+      case "skills":
+        return text(formatSkills(await rpc.request("skills/list", { cwds: [this.cwd] })));
+      case "hooks":
+        return text(formatHooks(await rpc.request("hooks/list", { threadId })));
+      case "plugins":
+        return text(formatPlugins(await rpc.request("plugin/list", { cwds: [this.cwd] })));
+      case "ps":
+        return text(
+          formatBackgroundTerminals(
+            await rpc.request("thread/backgroundTerminals/list", { threadId }),
+          ),
+        );
+      case "stop":
+        await rpc.request("thread/backgroundTerminals/clean", { threadId });
+        return text("Stopped all background terminals.");
+    }
+  }
+
+  /**
+   * Answer a side question from the thread's context with `thread/sample`, which adds
+   * nothing to the thread. The prompt is acknowledged at once; the answer follows.
+   */
+  private async askSideQuestion(
+    rpc: RpcClient,
+    prompt: ProviderPrompt,
+    question: string,
+    active: NativeTurn | undefined,
+  ): Promise<void> {
+    if (!question)
+      return this.answerOrFail(prompt, active, {
+        error: "Ask a question after /btw, for example: /btw what does this function return?",
+      });
+    const latest = active ?? (await this.readLatestTurn(rpc));
+    if (!latest)
+      return this.answerOrFail(prompt, active, {
+        error: "Side questions need an earlier turn; send a normal message first.",
+      });
+    const request = rpc.request("thread/sample", {
+      threadId: this.threadId,
+      expectedTurnId: latest.id,
+      prompt: sideQuestionPrompt(question),
+      ...(latest.status === "inProgress" ? { allowInProgressTurn: true } : {}),
+    });
+    const turnId = active?.id ?? this.commandTurnId(prompt);
+    const side: SideQuestion = { turnId, canceled: false };
+    if (active) {
+      this.acknowledgeSteer(prompt, active.id);
+    } else {
+      this.emit({
+        type: "session.prompt_result",
+        sessionId: this.sessionId,
+        clientMessageId: prompt.clientMessageId,
+        result: { type: "turn", turnId },
+      });
+      this.emit({ type: "session.turn", sessionId: this.sessionId, turnId, state: "started" });
+      this.sideQuestions.add(side);
+    }
+    void request
+      .then((response) => {
+        const { text } = z.object({ text: z.string().nullish() }).parse(response);
+        return text
+          ? { text }
+          : {
+              error:
+                "Codex tried to use a tool instead of answering. Side questions answer from the conversation; ask in a normal message to let Codex use tools.",
+            };
+      })
+      .catch((error: unknown) => {
+        // Codex before 0.171 samples only a thread whose latest turn has finished.
+        const hint =
+          latest.status === "inProgress"
+            ? " Codex releases before 0.171 answer side questions only between turns."
+            : "";
+        return { error: `Side question failed: ${errorMessage(error)}.${hint}` };
+      })
+      .then((answer: CommandAnswer) => {
+        if (side.canceled || this.closed) return;
+        this.sideQuestions.delete(side);
+        this.emitAnswer(prompt, answer);
+        if (!active)
+          this.emit({
+            type: "session.turn",
+            sessionId: this.sessionId,
+            turnId,
+            state: "completed",
+          });
+      });
+  }
+
+  private cancelSideQuestions(): void {
+    for (const side of this.sideQuestions) {
+      side.canceled = true;
+      this.emit({
+        type: "session.turn",
+        sessionId: this.sessionId,
+        turnId: side.turnId,
+        state: "canceled",
+      });
+    }
+    this.sideQuestions.clear();
+  }
+
+  private commandTurnId(prompt: ProviderPrompt): string {
+    return `paseo-command-${prompt.clientMessageId}`;
+  }
+
+  private acknowledgeSteer(prompt: ProviderPrompt, turnId: string): void {
+    this.emit({
+      type: "session.prompt_result",
+      sessionId: this.sessionId,
+      clientMessageId: prompt.clientMessageId,
+      result: { type: "steer", turnId },
+    });
+  }
+
+  private emitAnswer(prompt: ProviderPrompt, answer: CommandAnswer): void {
+    const id = `paseo-command-answer-${prompt.clientMessageId}`;
+    this.emit({
+      type: "timeline.item",
+      sessionId: this.sessionId,
+      item:
+        "text" in answer
+          ? { id, type: "assistant_message", text: answer.text }
+          : { id, type: "error", message: answer.error },
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  /**
+   * Show a command's answer. During a native turn it joins that turn as accepted steering,
+   * because a failed steer would make Paseo interrupt the turn to resend the command. When
+   * idle, an answer is a turn of its own and a failure fails the prompt.
+   */
+  private answerOrFail(
+    prompt: ProviderPrompt,
+    active: NativeTurn | undefined,
+    answer: CommandAnswer,
+  ): void {
+    if (active) {
+      this.acknowledgeSteer(prompt, active.id);
+      this.emitAnswer(prompt, answer);
+      return;
+    }
+    if ("error" in answer) throw new Error(answer.error);
+    const turnId = this.commandTurnId(prompt);
+    this.emit({
+      type: "session.prompt_result",
+      sessionId: this.sessionId,
+      clientMessageId: prompt.clientMessageId,
+      result: { type: "turn", turnId },
+    });
+    this.emit({ type: "session.turn", sessionId: this.sessionId, turnId, state: "started" });
+    this.emitAnswer(prompt, answer);
+    this.emit({ type: "session.turn", sessionId: this.sessionId, turnId, state: "completed" });
   }
 
   disconnect(error: Error): void {
@@ -428,6 +792,8 @@ export class AttachedThread {
 
   async close(): Promise<void> {
     this.closed = true;
+    for (const side of this.sideQuestions) side.canceled = true;
+    this.sideQuestions.clear();
     if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
     const rpc = this.rpc;
@@ -712,4 +1078,18 @@ export class AttachedThread {
     this.fingerprintBytes = fingerprintBytes;
     return snapshot;
   }
+}
+
+/** The bridge command or terminal-only rejection a prompt names, if any. */
+function commandRoute(input: ProviderPrompt["input"]): SlashRoute | undefined {
+  if (input.type === "command")
+    return (
+      routeCommand(input.name.toLowerCase(), input.arguments.trim()) ?? {
+        kind: "reject",
+        message: `/${input.name} is not a command Codex Terminal can run.`,
+      }
+    );
+  // Paseo sends a slash command typed during a turn as steering text.
+  const [part, ...rest] = input.content;
+  return part?.type === "text" && !rest.length ? routeText(part.text) : undefined;
 }
