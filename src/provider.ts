@@ -21,6 +21,7 @@ import {
   codexHome,
   codexVersionRequirement,
   isSupportedCodexVersion,
+  type pointerSchema,
   readPages,
   readPointer,
   threadSchema,
@@ -46,6 +47,8 @@ export const CAPABILITIES = [
 const RECONNECT_DELAY_MS = 2_000;
 const MAX_RECONNECT_DELAY_MS = 30_000;
 const MAX_ATTACHMENTS = 128;
+const ACTIVATION_ATTEMPTS = 10;
+const ACTIVATION_RETRY_MS = 300;
 
 export function createBridgeProvider(
   readHostTurn: (agentId: string) => Promise<string | null>,
@@ -60,7 +63,7 @@ export function createBridgeProvider(
     registration: {
       id: PROVIDER_ID,
       label: "Codex Terminal",
-      description: "Existing shared-daemon Codex CLI threads",
+      description: "Codex threads on the shared daemon, shared with the Codex terminal",
       command: ["codex"],
       async status({ launch }) {
         if (!launch)
@@ -105,6 +108,58 @@ export function createBridgeProvider(
       return thread.activate();
     },
   };
+}
+
+/** Start a thread for a new Paseo agent on the shared daemon, with the agent's choices. */
+async function startThread(
+  client: RpcClient,
+  config: Extract<ProviderInput, { type: "session.open" }>["config"],
+  home: string,
+): Promise<{
+  pointer: z.infer<typeof pointerSchema>;
+  settings: { cwd: string; name: string | null; model: string | null; effort: string | null };
+}> {
+  const response = z
+    .object({
+      thread: threadSchema,
+      model: z.string().nullish(),
+      reasoningEffort: z.string().nullish(),
+    })
+    .parse(
+      await client.request("thread/start", {
+        cwd: config.cwd,
+        ephemeral: !config.persist,
+        ...(config.model ? { model: config.model } : {}),
+        ...(config.systemPrompt ? { developerInstructions: config.systemPrompt } : {}),
+      }),
+    );
+  const { thread } = response;
+  if (config.thinkingOption)
+    await client.request("thread/settings/update", {
+      threadId: thread.id,
+      effort: config.thinkingOption,
+    });
+  return {
+    pointer: { version: 1, data: { threadId: thread.id, codexHome: home } },
+    settings: {
+      cwd: thread.cwd,
+      name: thread.name ?? null,
+      model: response.model || thread.model || null,
+      effort: config.thinkingOption ?? response.reasoningEffort ?? thread.reasoningEffort ?? null,
+    },
+  };
+}
+
+async function activateWhenRegistered(thread: AttachedThread): Promise<void> {
+  for (let attempt = 0; attempt < ACTIVATION_ATTEMPTS; attempt++) {
+    try {
+      await thread.activate();
+      return;
+    } catch {
+      // Paseo may not have registered the agent yet; discovery activates it otherwise.
+      await new Promise((resolve) => setTimeout(resolve, ACTIVATION_RETRY_MS));
+    }
+  }
 }
 
 function connection(
@@ -323,13 +378,17 @@ function connection(
       if (sessions.size >= MAX_ATTACHMENTS)
         throw new Error(`Codex attachment limit exceeded (${MAX_ATTACHMENTS})`);
       if (sessions.has(input.sessionId)) throw new Error("Paseo session is already attached");
-      const pointer = readPointer(input.persistence, home);
-      if ([...sessions.values()].some((thread) => thread.threadId === pointer.data.threadId))
-        throw new Error("Codex thread is already attached in this provider connection");
       const agentId = input.config.env[AGENT_ID_ENV];
       if (!agentId)
         throw new Error("Codex Terminal session-open hook did not supply the Paseo agent identity");
       const client = await getRpc();
+      // A new agent created in Paseo starts its thread on the shared daemon, so the Codex
+      // terminal can resume the same thread with `codex resume <id>` and both stay attached.
+      const started = input.persistence ? undefined : await startThread(client, input.config, home);
+      const created = started !== undefined;
+      const pointer = started?.pointer ?? readPointer(input.persistence, home);
+      if ([...sessions.values()].some((thread) => thread.threadId === pointer.data.threadId))
+        throw new Error("Codex thread is already attached in this provider connection");
       const thread = new AttachedThread(
         input.sessionId,
         agentId,
@@ -356,8 +415,12 @@ function connection(
         commands: [...BRIDGE_COMMANDS],
       });
       try {
-        await thread.hydrate(client);
+        if (started) thread.attachStarted(client, started.settings);
+        else await thread.hydrate(client);
         emit({ type: "session.ready", requestId: input.requestId, sessionId: input.sessionId });
+        // Imports are activated by discovery once Paseo registers them. A created agent is
+        // already registered when its first prompt arrives; activate it without waiting a pass.
+        if (created) void activateWhenRegistered(thread);
       } catch (error) {
         sessions.delete(input.sessionId);
         if (attachments.get(agentId) === thread) attachments.delete(agentId);
