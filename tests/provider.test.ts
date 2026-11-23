@@ -135,6 +135,8 @@ class NativeDaemon implements RpcClient {
         return {};
       case "thread/settings/update":
         return {};
+      case "thread/start":
+        return { thread: { ...nativeThread, originator: "paseo_bridge_codex" } };
       case "model/list": {
         const page = (params as { cursor?: string | null }).cursor === "page-2" ? 1 : 0;
         return { data: [codexModels[page]], nextCursor: page === 0 ? "page-2" : null };
@@ -237,6 +239,82 @@ describe("shared-thread provider", () => {
         changes: { mode: "plan" },
       });
       expect(events.at(-1)).toMatchObject({ type: "request.failed", requestId: "mode" });
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("starts a shared-daemon thread for an agent created in Paseo", async () => {
+    const daemon = new NativeDaemon();
+    const bridge = createBridgeProvider(
+      async () => "native-turn",
+      visibleQuestions,
+      async () => daemon,
+    );
+    const connection = await bridge.registration.connect({
+      versions: [1],
+      capabilities: [...CAPABILITIES],
+      launch,
+    });
+    const events: ProviderEvent[] = [];
+    connection.onEvent((event) => events.push(event));
+    try {
+      const { persistence: _none, ...created } = open;
+      await connection.send({
+        ...created,
+        config: {
+          ...open.config,
+          model: "gpt-b",
+          thinkingOption: "high",
+          systemPrompt: "Be brief",
+        },
+      });
+      expect(daemon.calls.find((call) => call.method === "thread/start")?.params).toEqual({
+        cwd: "/tmp",
+        ephemeral: false,
+        model: "gpt-b",
+        developerInstructions: "Be brief",
+      });
+      expect(daemon.calls).toContainEqual({
+        method: "thread/settings/update",
+        params: { threadId, effort: "high" },
+      });
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: "session.opened",
+          persistence: { version: 1, data: { threadId, codexHome } },
+        }),
+      );
+      expect(events).toContainEqual({
+        type: "session.ready",
+        requestId: "open",
+        sessionId: open.sessionId,
+      });
+      // A fresh thread has no rollout to resume, so the start response is the snapshot.
+      expect(daemon.calls.map((call) => call.method)).not.toContain("thread/resume");
+      // Activated without a discovery pass.
+      await vi.waitFor(async () => expect(await bridge.activate("agent-1")).toBe(false));
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("attaches an imported thread without starting one or applying Paseo's defaults", async () => {
+    const daemon = new NativeDaemon();
+    const bridge = createBridgeProvider(
+      async () => "native-turn",
+      visibleQuestions,
+      async () => daemon,
+    );
+    const connection = await bridge.registration.connect({
+      versions: [1],
+      capabilities: [...CAPABILITIES],
+      launch,
+    });
+    try {
+      await connection.send(open);
+      expect(daemon.calls.map((call) => call.method)).not.toContain("thread/start");
+      expect(daemon.calls.map((call) => call.method)).not.toContain("thread/settings/update");
     } finally {
       await connection.close();
     }
@@ -2306,6 +2384,25 @@ describe("slash commands", () => {
           }),
         }),
       );
+
+      const listed = await command("model");
+      expect(listed.events()).toContainEqual(
+        expect.objectContaining({
+          item: expect.objectContaining({ text: expect.stringContaining("- gpt-b (GPT B): high") }),
+        }),
+      );
+      await command("model", "gpt-b high");
+      expect(called("thread/settings/update").at(-1)?.params).toEqual({
+        threadId,
+        model: "gpt-b",
+        effort: "high",
+      });
+      const unsupported = await command("model", "gpt-b low");
+      expect(unsupported.events()).toEqual([
+        expect.objectContaining({
+          result: { type: "failed", error: { message: 'gpt-b supports high, not "low".' } },
+        }),
+      ]);
 
       // Typed commands arrive as text when Paseo has not listed them; aliases work too.
       const goal = await text("/goal");

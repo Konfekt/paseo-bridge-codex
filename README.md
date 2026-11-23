@@ -1,6 +1,12 @@
 # paseo-bridge-codex
 
-Attach terminal-started Codex threads to unmodified Paseo. The terminal and Paseo control the same native thread; closing the terminal does not close the Paseo attachment.
+Share Codex threads between the Codex terminal and unmodified Paseo, including its Android app. A thread started in the terminal appears in Paseo, and a **Codex Terminal** agent created in Paseo is a thread on the same shared daemon that `codex resume <thread-id>` continues in a terminal. Both sides control the same native thread at the same time; neither has to close for the other to continue.
+
+```
+ Codex TUI ----\                         /---- Paseo (desktop, Android)
+ codex resume   +-- shared Codex daemon --+     Codex Terminal agent
+ <thread-id> --/   (one native thread)     \--- via app-server proxy
+```
 
 The package supplies a **Codex Terminal** provider (`codex-terminal`) and one plugin-owned discovery worker per Paseo host. Paseo's built-in Codex provider stays unchanged. No shell wrapper or replacement execution engine is involved.
 
@@ -86,6 +92,7 @@ Discovery runs inside the Paseo daemon and finds it through `$PASEO_HOME/paseo.p
 | `node server/cli.js once`                             | Run one diagnostic discovery pass; exit nonzero if an attachment fails.                         |
 | `node server/cli.js once --paseo-home /absolute/path` | Run that pass against the selected local Paseo home using its existing credentials.             |
 | `node server/cli.js --help`                           | Print CLI usage.                                                                                |
+| New agent in Paseo, provider **Codex Terminal**       | Start a thread on the shared daemon; continue it in a terminal with `codex resume <thread-id>`. |
 | Send text in Paseo                                    | Start a native turn when idle, or steer the admitted active turn.                               |
 | Type a `/command` in Paseo                            | Run a Codex command through the app-server; see [Slash commands](#slash-commands).              |
 | Hide an async question                                | Remove its Paseo card permanently for this attachment, without sending a native answer.         |
@@ -100,21 +107,22 @@ After installing the package as a CLI, `paseo-bridge-codex` replaces `node serve
 
 Codex's slash commands belong to its terminal UI; the app-server only offers the operations behind them. The bridge lists the commands below in Paseo's command menu and runs each through the matching app-server method. None of them reaches the model as text.
 
-| Command                                                     | Effect                                                                                                            | App-server method                                                     |
-| ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| `/btw <question>`, `/side <question>`                       | Answer a quick question from the thread's context. The question and answer are not added to the thread.           | `thread/sample`                                                       |
-| `/compact`                                                  | Compact the conversation; Paseo shows the native compaction turn.                                                 | `thread/compact/start`                                                |
-| `/review [base <branch> \| commit <sha> \| <instructions>]` | Review uncommitted changes, a branch diff, a commit, or custom instructions, as a native turn.                    | `review/start`                                                        |
-| `/init`                                                     | Ask Codex to write `AGENTS.md`, with Codex's own prompt. Does nothing if the file exists.                         | `turn/start`                                                          |
-| `/plan [off \| <prompt>]`                                   | Switch to Codex's Plan mode, optionally starting a turn with the prompt; `/plan off` returns to the default mode. | `thread/settings/update`                                              |
-| `/rename <name>`                                            | Rename the thread.                                                                                                | `thread/name/set`                                                     |
-| `/goal [<objective> \| pause \| resume \| done \| clear]`   | Show, set or change the thread's goal. An active goal makes Codex continue on its own, as in the terminal.        | `thread/goal/*`                                                       |
-| `/status`                                                   | Show the thread, directory, model, reasoning effort, goal and last token usage.                                   | `thread/goal/get`                                                     |
-| `/usage`                                                    | Show account rate limits. Needs a signed-in Codex account.                                                        | `account/rateLimits/read`                                             |
-| `/permissions [<profile>]`                                  | List permission profiles, or choose one for the next turns (`workspace` matches `:workspace`).                    | `permissionProfile/list`, `thread/settings/update`                    |
-| `/memories on\|off`                                         | Turn memory use on or off for the thread.                                                                         | `thread/memoryMode/set`                                               |
-| `/mcp`, `/skills`, `/hooks`, `/plugins`                     | List MCP servers and tools, skills, lifecycle hooks, or plugins.                                                  | `mcpServerStatus/list`, `skills/list`, `hooks/list`, `plugin/list`    |
-| `/ps`, `/stop` (`/clean`)                                   | List or stop the thread's background terminals.                                                                   | `thread/backgroundTerminals/list`, `thread/backgroundTerminals/clean` |
+| Command                                                     | Effect                                                                                                                                   | App-server method                                                     |
+| ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `/btw <question>`, `/side <question>`                       | Answer a quick question from the thread's context. The question and answer are not added to the thread.                                  | `thread/sample`                                                       |
+| `/compact`                                                  | Compact the conversation; Paseo shows the native compaction turn.                                                                        | `thread/compact/start`                                                |
+| `/review [base <branch> \| commit <sha> \| <instructions>]` | Review uncommitted changes, a branch diff, a commit, or custom instructions, as a native turn.                                           | `review/start`                                                        |
+| `/init`                                                     | Ask Codex to write `AGENTS.md`, with Codex's own prompt. Does nothing if the file exists.                                                | `turn/start`                                                          |
+| `/plan [off \| <prompt>]`                                   | Switch to Codex's Plan mode, optionally starting a turn with the prompt; `/plan off` returns to the default mode.                        | `thread/settings/update`                                              |
+| `/model [<model> [<effort>]]`                               | List Codex's models, or switch the thread's model and reasoning effort for its next turns; a unique fragment of the model name suffices. | `model/list`, `thread/settings/update`                                |
+| `/rename <name>`                                            | Rename the thread.                                                                                                                       | `thread/name/set`                                                     |
+| `/goal [<objective> \| pause \| resume \| done \| clear]`   | Show, set or change the thread's goal. An active goal makes Codex continue on its own, as in the terminal.                               | `thread/goal/*`                                                       |
+| `/status`                                                   | Show the thread, directory, model, reasoning effort, goal and last token usage.                                                          | `thread/goal/get`                                                     |
+| `/usage`                                                    | Show account rate limits. Needs a signed-in Codex account.                                                                               | `account/rateLimits/read`                                             |
+| `/permissions [<profile>]`                                  | List permission profiles, or choose one for the next turns (`workspace` matches `:workspace`).                                           | `permissionProfile/list`, `thread/settings/update`                    |
+| `/memories on\|off`                                         | Turn memory use on or off for the thread.                                                                                                | `thread/memoryMode/set`                                               |
+| `/mcp`, `/skills`, `/hooks`, `/plugins`                     | List MCP servers and tools, skills, lifecycle hooks, or plugins.                                                                         | `mcpServerStatus/list`, `skills/list`, `hooks/list`, `plugin/list`    |
+| `/ps`, `/stop` (`/clean`)                                   | List or stop the thread's background terminals.                                                                                          | `thread/backgroundTerminals/list`, `thread/backgroundTerminals/clean` |
 
 How answers appear:
 - When the thread is idle, an answer is a short turn of its own in Paseo. A failure, such as `/usage` without a signed-in account, shows as an error and starts nothing.
@@ -123,7 +131,9 @@ How answers appear:
 - Command answers live only in Paseo's timeline. Codex does not store them, so they disappear when Paseo reloads the thread's history.
 - `/btw` runs one model request without tools, using the thread's model. Asking during a running turn needs Codex 0.171 or newer; older releases answer with an error until the turn ends. Paseo's stop button cancels a side question asked while the thread is idle.
 
-Other Codex terminal commands, such as `/diff`, `/model`, `/new`, `/resume`, `/fork`, `/copy` and `/quit`, are rejected with a message that names the Paseo alternative (for example "Use Paseo's diff view."). `/new`, `/clear`, `/resume` and `/fork` would move the terminal to another thread, which Paseo cannot follow, so start or fork the session in the terminal and let Paseo import it. Names Codex does not define, such as a path like `/tmp/log`, still reach the model as text.
+Other Codex terminal commands, such as `/diff`, `/new`, `/resume`, `/fork`, `/copy` and `/quit`, are rejected with a message that names the Paseo alternative (for example "Use Paseo's diff view."). `/new`, `/clear`, `/resume` and `/fork` would move a Paseo agent to another thread; create a new Codex Terminal agent in Paseo instead, or start or fork the session in the terminal and let Paseo import it.
+
+The thread ID of a Paseo-created agent is shown by `/status`. Codex writes a thread's rollout with its first turn, so send a first message before resuming the thread in a terminal or restarting Paseo; an empty thread cannot be resumed. Names Codex does not define, such as a path like `/tmp/log`, still reach the model as text.
 
 ## Limits and recovery
 

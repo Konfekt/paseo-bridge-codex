@@ -28,6 +28,11 @@ export const BRIDGE_COMMANDS = [
   { name: "init", description: "Create an AGENTS.md file with instructions for Codex" },
   { name: "rename", description: "Rename the current thread", argumentHint: "<name>" },
   {
+    name: "model",
+    description: "List models or choose one, with an optional reasoning effort",
+    argumentHint: "[<model> [<effort>]]",
+  },
+  {
     name: "goal",
     description: "Set or view the goal for a long-running task",
     argumentHint: "[<objective> | pause | resume | done | clear]",
@@ -61,7 +66,8 @@ const BRIDGE_COMMAND_NAMES: ReadonlySet<string> = new Set(BRIDGE_COMMANDS.map(({
 const ALIASES: Readonly<Record<string, BridgeCommandName>> = { clean: "stop" };
 
 const IN_TERMINAL = "Use it in the Codex terminal.";
-const NEW_AGENT = "Start a new Codex session in the terminal; Paseo imports it.";
+const NEW_AGENT =
+  "Start a new Codex Terminal agent in Paseo, or a new Codex session in the terminal, which Paseo imports.";
 
 /**
  * The Codex terminal's slash commands (codex-rs/tui/src/slash_command.rs, including aliases)
@@ -69,7 +75,6 @@ const NEW_AGENT = "Start a new Codex session in the terminal; Paseo imports it."
  * later reach the model as text, as before, until they are listed here or run by the bridge.
  */
 export const TERMINAL_ONLY_COMMANDS: Readonly<Record<string, string>> = {
-  model: "Use Paseo's model and reasoning pickers.",
   presets: IN_TERMINAL,
   daybreak: IN_TERMINAL,
   ide: IN_TERMINAL,
@@ -539,4 +544,59 @@ export function collaborationModeSettings(
       developer_instructions: null,
     },
   };
+}
+
+interface ModelChoice {
+  id: string;
+  label?: string;
+  thinkingOptions?: readonly { id: string }[];
+  defaultThinkingOptionId?: string;
+}
+
+/** Codex's models as `/model` lists them, marking the thread's current choice. */
+export function formatModels(
+  models: readonly ModelChoice[],
+  current: { model: string | null; effort: string | null },
+): string {
+  return listing(
+    `Model: ${current.model ?? "unknown"}${current.effort ? ` (${current.effort})` : ""}. Choose one with /model <model> [<effort>]:`,
+    "Codex reported no models.",
+    models.map((model) => {
+      const efforts = model.thinkingOptions?.map((option) => option.id) ?? [];
+      const label = model.label && model.label !== model.id ? ` (${model.label})` : "";
+      const mark = model.id === current.model ? " [current]" : "";
+      return `${model.id}${label}${mark}${efforts.length ? `: ${efforts.join(", ")}` : ""}`;
+    }),
+  );
+}
+
+/** Resolve `/model <model> [<effort>]` against Codex's catalog. */
+export function pickModel(
+  models: readonly ModelChoice[],
+  args: string,
+): { model: string; effort?: string } | { error: string } {
+  const [wanted = "", effort, ...rest] = args.split(/\s+/).filter(Boolean);
+  if (rest.length) return { error: "Use /model <model> [<effort>]." };
+  const lower = wanted.toLowerCase();
+  const matches = models.filter(
+    (model) => model.id.toLowerCase() === lower || model.label?.toLowerCase() === lower,
+  );
+  const found =
+    matches.length === 1
+      ? matches[0]
+      : matches.length === 0
+        ? (() => {
+            const partial = models.filter((model) => model.id.toLowerCase().includes(lower));
+            return partial.length === 1 ? partial[0] : undefined;
+          })()
+        : undefined;
+  if (!found)
+    return { error: `Codex has no single model matching "${wanted}". Send /model to list them.` };
+  if (effort === undefined) return { model: found.id };
+  const efforts = found.thinkingOptions?.map((option) => option.id) ?? [];
+  if (!efforts.includes(effort))
+    return {
+      error: `${found.id} supports ${efforts.length ? efforts.join(", ") : "no reasoning effort choice"}, not "${effort}".`,
+    };
+  return { model: found.id, effort };
 }

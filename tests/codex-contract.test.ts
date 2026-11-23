@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { execCommand } from "@getpaseo/plugin/server";
 import type { ProviderEvent } from "@getpaseo/plugin/server/provider";
 import { expect, test, vi } from "vitest";
+import { z } from "zod";
 import { readModelCatalog } from "../src/models.js";
 import {
   CODEX_TESTED_VERSION,
@@ -10,6 +11,8 @@ import {
   isSupportedCodexVersion,
   userAgentVersion,
 } from "../src/protocol.js";
+import { AGENT_ID_ENV, CAPABILITIES, createBridgeProvider } from "../src/provider.js";
+import { connectRpc } from "../src/rpc.js";
 import { AttachedThread } from "../src/thread.js";
 import { type RealCodex, startRealCodex } from "./real-codex.js";
 
@@ -347,6 +350,89 @@ test("released Codex runs the bridge's slash commands for Paseo without reaching
     await writeFile(join(real.temp, "AGENTS.md"), "# Repository Guidelines\n");
     expect(await answerOf({ name: "init" })).toContain("AGENTS.md already exists");
     await thread.close();
+  } finally {
+    await real.close();
+  }
+}, 60_000);
+
+test("released Codex continues a thread created in Paseo from the terminal, and Paseo follows", async () => {
+  const real = await startRealCodex();
+  try {
+    const version = await releaseOf(real);
+    const bridge = createBridgeProvider(
+      async () => null,
+      { read: async () => new Set<string>(), hide: async () => undefined },
+      () =>
+        connectRpc({
+          command: real.codex,
+          args: ["app-server", "proxy", "--sock", real.socket],
+          env: real.env,
+        }),
+    );
+    const connection = await bridge.registration.connect({
+      versions: [1],
+      capabilities: [...CAPABILITIES],
+      launch: { command: real.codex, args: [], env: real.env },
+    });
+    const events: ProviderEvent[] = [];
+    connection.onEvent((event) => events.push(event));
+    try {
+      // New agent in Paseo: no persistence yet, so the bridge starts the thread.
+      await connection.send({
+        type: "session.open",
+        requestId: "open",
+        sessionId: "paseo-session",
+        history: "replay",
+        config: {
+          cwd: real.temp,
+          env: { [AGENT_ID_ENV]: "agent-1" },
+          persist: true,
+          settings: {},
+          mcpServers: {},
+        },
+      });
+      const opened = events.find((event) => event.type === "session.opened");
+      if (opened?.type !== "session.opened")
+        throw new Error(`Not opened: ${JSON.stringify(events)}`);
+      const threadId = z.object({ threadId: z.string() }).parse(opened.persistence?.data).threadId;
+      await vi.waitFor(() => expect(bridge.activate("agent-1")).resolves.toBe(false));
+      await connection.send({
+        type: "session.prompt",
+        sessionId: "paseo-session",
+        prompt: {
+          clientMessageId: "from-paseo",
+          delivery: "auto",
+          input: { type: "message", content: [{ type: "text", text: "From Paseo" }] },
+        },
+      });
+      const completedTurns = () =>
+        events.filter((event) => event.type === "session.turn" && event.state === "completed")
+          .length;
+      await vi.waitFor(() => expect(completedTurns()).toBe(1), { timeout: 15_000 });
+
+      // The terminal resumes the same thread on the shared daemon, as `codex resume <id>` does.
+      const { client: terminal } = await real.connect("codex-tui", version);
+      const listed = (await terminal.request("thread/list", {
+        archived: false,
+        sourceKinds: ["cli", "vscode"],
+        limit: 100,
+      })) as { data: { id: string }[] };
+      expect(listed.data.map((thread) => thread.id)).toContain(threadId);
+      const resumed = (await terminal.request("thread/resume", { threadId })) as {
+        thread: { id: string; canAcceptDirectInput: boolean };
+      };
+      expect(resumed.thread).toMatchObject({ id: threadId, canAcceptDirectInput: true });
+      await terminal.request("turn/start", {
+        threadId,
+        input: [{ type: "text", text: "From the terminal", text_elements: [] }],
+      });
+      // Paseo sees the terminal's turn in the same chat.
+      await vi.waitFor(() => expect(completedTurns()).toBe(2), { timeout: 15_000 });
+      expect(real.modelRequests.at(-1)).toContain("From the terminal");
+      expect(real.modelRequests.at(-1)).toContain("From Paseo");
+    } finally {
+      await connection.close();
+    }
   } finally {
     await real.close();
   }

@@ -18,6 +18,7 @@ import {
   formatGoal,
   formatHooks,
   formatMcpServers,
+  formatModels,
   formatPermissionProfiles,
   formatPlugins,
   formatRateLimits,
@@ -29,6 +30,7 @@ import {
   parseToggle,
   parseTokenUsage,
   permissionProfiles,
+  pickModel,
   pickPermissionProfile,
   routeCommand,
   routeText,
@@ -37,6 +39,7 @@ import {
   type TokenUsage,
 } from "./commands.js";
 import { errorMessage } from "./errors.js";
+import { readModelCatalog } from "./models.js";
 import { permissionId, permissionResult, projectPermission } from "./permissions.js";
 import {
   type NativeTurn,
@@ -54,7 +57,7 @@ import {
   hiddenQuestionLabel,
   type QuestionVisibility,
 } from "./questions.js";
-import type { RpcClient, RpcMessage } from "./rpc.js";
+import { type RpcClient, type RpcMessage, RpcResponseError } from "./rpc.js";
 import { projectItem } from "./timeline.js";
 
 const SNAPSHOT_DELAY_MS = 75;
@@ -129,6 +132,23 @@ export class AttachedThread {
     } finally {
       this.hydrating = false;
     }
+  }
+
+  /**
+   * Attach to a thread this bridge has just started for a new Paseo agent. It has no history,
+   * and Codex cannot resume it until its first turn writes the rollout, so nothing is read.
+   */
+  attachStarted(
+    rpc: RpcClient,
+    started: { cwd: string; name: string | null; model: string | null; effort: string | null },
+  ): void {
+    this.rpc = rpc;
+    this.activeTurn = undefined;
+    this.cwd = started.cwd;
+    this.name = started.name;
+    this.model = started.model;
+    this.effort = started.effort;
+    this.emitConfig();
   }
 
   private async readNativeSnapshot(rpc: RpcClient, publishHistory: boolean): Promise<void> {
@@ -530,6 +550,20 @@ export class AttachedThread {
         if (mode === "default") return text("Left Plan mode.");
         if (!args) return text("Plan mode is on. Leave it with /plan off.");
         return startTurn("turn/start", turnInput(args));
+      }
+      case "model": {
+        const { models } = await readModelCatalog(rpc);
+        if (!args) return text(formatModels(models, { model: this.model, effort: this.effort }));
+        const choice = pickModel(models, args);
+        if ("error" in choice) return { error: choice.error };
+        const update = { model: choice.model, ...(choice.effort ? { effort: choice.effort } : {}) };
+        await rpc.request("thread/settings/update", { threadId, ...update });
+        this.model = choice.model;
+        if (choice.effort) this.effort = choice.effort;
+        this.emitConfig();
+        return text(
+          `Model for the next turns: ${choice.model}${choice.effort ? ` (${choice.effort})` : ""}.`,
+        );
       }
       case "rename": {
         if (!args) return { error: "Name the thread: /rename <name>." };
@@ -979,15 +1013,20 @@ export class AttachedThread {
   }
 
   private async readLatestTurn(rpc: RpcClient): Promise<NativeTurn | undefined> {
-    const { data } = z.object({ data: z.array(turnSchema) }).parse(
-      await rpc.request("thread/turns/list", {
+    let response: unknown;
+    try {
+      response = await rpc.request("thread/turns/list", {
         threadId: this.threadId,
         limit: 1,
         sortDirection: "desc",
         itemsView: "notLoaded",
-      }),
-    );
-    return data[0];
+      });
+    } catch (error) {
+      // A thread started in Paseo has no rollout, and so no turns, before its first turn.
+      if (isUnmaterializedThread(error)) return undefined;
+      throw error;
+    }
+    return z.object({ data: z.array(turnSchema) }).parse(response).data[0];
   }
 
   private async readQuestions(rpc: RpcClient): Promise<Map<string, AsyncQuestion>> {
@@ -1094,4 +1133,13 @@ function commandRoute(input: ProviderPrompt["input"]): SlashRoute | undefined {
   // Paseo sends a slash command typed during a turn as steering text.
   const [part, ...rest] = input.content;
   return part?.type === "text" && !rest.length ? routeText(part.text) : undefined;
+}
+
+/** Codex's answer for a thread that exists but has not written its rollout yet. */
+export function isUnmaterializedThread(error: unknown): boolean {
+  return (
+    error instanceof RpcResponseError &&
+    error.code === -32600 &&
+    /no rollout found|not materialized/i.test(error.message)
+  );
 }

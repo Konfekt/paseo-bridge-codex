@@ -6,6 +6,7 @@ import {
   formatGoal,
   formatHooks,
   formatMcpServers,
+  formatModels,
   formatPermissionProfiles,
   formatPlugins,
   formatRateLimits,
@@ -16,6 +17,7 @@ import {
   parseSlash,
   parseToggle,
   parseTokenUsage,
+  pickModel,
   pickPermissionProfile,
   routeCommand,
   routeText,
@@ -41,7 +43,7 @@ describe("Codex slash commands", () => {
       message:
         "/diff is a Codex terminal command and is not available from Paseo. Use Paseo's diff view.",
     });
-    expect(routeText("/model gpt-5")).toMatchObject({ kind: "reject" });
+    expect(routeText("/model gpt-5")).toEqual({ kind: "run", name: "model", args: "gpt-5" });
     expect(routeText("/prompts:deploy now")).toBeUndefined();
     expect(routeText("/toString")).toBeUndefined();
     expect(routeText("/constructor")).toBeUndefined();
@@ -207,5 +209,35 @@ describe("Codex slash commands", () => {
     expect(() => collaborationModeSettings(modes, "plan", { model: null, effort: null })).toThrow(
       "model is unknown",
     );
+  });
+});
+
+describe("/model", () => {
+  const models = [
+    { id: "gpt-a", label: "GPT A", thinkingOptions: [{ id: "low" }, { id: "medium" }] },
+    { id: "gpt-b", label: "GPT B", thinkingOptions: [{ id: "high" }] },
+    { id: "gpt-b-mini", label: "GPT B mini" },
+  ];
+  it("lists models with their efforts and marks the current one", () => {
+    expect(formatModels(models, { model: "gpt-a", effort: "low" })).toBe(
+      [
+        "Model: gpt-a (low). Choose one with /model <model> [<effort>]:",
+        "- gpt-a (GPT A) [current]: low, medium",
+        "- gpt-b (GPT B): high",
+        "- gpt-b-mini (GPT B mini)",
+      ].join("\n"),
+    );
+  });
+  it("resolves exact names, labels and unique fragments, and checks the effort", () => {
+    expect(pickModel(models, "gpt-b")).toEqual({ model: "gpt-b" });
+    expect(pickModel(models, "gpt-a medium")).toEqual({ model: "gpt-a", effort: "medium" });
+    expect(pickModel(models, "mini")).toEqual({ model: "gpt-b-mini" });
+    expect(pickModel(models, "gpt")).toMatchObject({
+      error: expect.stringContaining("no single model"),
+    });
+    expect(pickModel(models, "gpt-b low")).toEqual({ error: 'gpt-b supports high, not "low".' });
+    expect(pickModel(models, "gpt-a low extra")).toEqual({
+      error: "Use /model <model> [<effort>].",
+    });
   });
 });
